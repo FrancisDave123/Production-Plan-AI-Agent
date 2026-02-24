@@ -1,0 +1,5 @@
+{
+  "name": "Production Plan Maker",
+  "description": "AI agent that generates fully functional production planning Excel files based on user input.",
+  "requestFramePermissions": []
+}
