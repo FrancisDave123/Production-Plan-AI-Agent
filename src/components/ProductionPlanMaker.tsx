@@ -5,6 +5,7 @@ import { format, eachDayOfInterval, isValid, isSameDay } from 'date-fns';
 import { Send, Bot, User as UserIcon, RefreshCw, FileSpreadsheet, Loader2, Download, Paperclip, X } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import Papa from 'papaparse';
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   id: string;
@@ -138,8 +139,8 @@ export default function ProductionPlanMaker() {
                   unit: { type: Type.STRING, description: "The unit of measurement (e.g., 'units', 'hours')" },
                   startDate: { type: Type.STRING, description: "Start date in YYYY-MM-DD format" },
                   endDate: { type: Type.STRING, description: "End date in YYYY-MM-DD format" },
-                  resources: { 
-                    type: Type.ARRAY, 
+                  resources: {
+                    type: Type.ARRAY,
                     items: { type: Type.STRING },
                     description: "List of names of teams or individuals"
                   },
@@ -150,10 +151,10 @@ export default function ProductionPlanMaker() {
                       properties: {
                         header: { type: Type.STRING, description: "The display name of the column" },
                         key: { type: Type.STRING, description: "A unique key for the column" },
-                        section: { 
-                          type: Type.STRING, 
+                        section: {
+                          type: Type.STRING,
                           enum: ["Target", "Actual", "Accumulative"],
-                          description: "Which section the column belongs to" 
+                          description: "Which section the column belongs to"
                         },
                         formula: { type: Type.STRING, description: "Excel formula referencing DailyProductionTable. Use {rowIndex} for the current row." }
                       },
@@ -244,7 +245,7 @@ export default function ProductionPlanMaker() {
           name: row.Name || row.name || '',
           actual: parseFloat(row.Actual || row.actual || '0')
         })).filter(item => item.date && item.name);
-        
+
         setUploadedData(parsedData);
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
@@ -275,19 +276,19 @@ export default function ProductionPlanMaker() {
     try {
       const result = await chatRef.current.sendMessage({ message: userMsg.content });
       const response = result;
-      
+
       if (response.functionCalls) {
         for (const call of response.functionCalls) {
           if (call.name === 'generate_production_plan') {
             const projectData = call.args as ProjectData;
-            
+
             // Merge actual data from both sources
             const combinedActualData = [...(projectData.actualData || [])];
-            
+
             if (uploadedData) {
               uploadedData.forEach(upItem => {
                 // Avoid duplicates if same date/name exists in both
-                const exists = combinedActualData.some(combItem => 
+                const exists = combinedActualData.some(combItem =>
                   combItem.date === upItem.date && combItem.name === upItem.name
                 );
                 if (!exists) {
@@ -295,7 +296,7 @@ export default function ProductionPlanMaker() {
                 }
               });
             }
-            
+
             projectData.actualData = combinedActualData.length > 0 ? combinedActualData : undefined;
             await generateExcelFile(projectData);
           }
@@ -327,14 +328,14 @@ export default function ProductionPlanMaker() {
 
       const start = new Date(projectData.startDate);
       const end = new Date(projectData.endDate);
-      
+
       if (!isValid(start) || !isValid(end)) {
         throw new Error("Invalid dates provided");
       }
 
       const days = eachDayOfInterval({ start, end });
       const scheduleItems: any[] = [];
-      
+
       days.forEach(day => {
         projectData.resources.forEach(resource => {
           // Find actual data if it exists
@@ -364,7 +365,7 @@ export default function ProductionPlanMaker() {
       });
 
       const totalItems = scheduleItems.length;
-      
+
       // --- LPB Target Distribution Logic ---
       // We calculate a weight for each item based on its chronological position
       // Learning (0-25%): 30% -> 60% weight
@@ -399,7 +400,7 @@ export default function ProductionPlanMaker() {
         { header: 'Month', key: 'month', width: 15 },
         { header: 'Name', key: 'name', width: 20 },
       ];
-      
+
       const dynamicKeyCols = projectData.dailyColumns.map(col => ({
         header: col.header,
         key: col.key,
@@ -415,8 +416,8 @@ export default function ProductionPlanMaker() {
         { name: 'Week', filterButton: true },
         { name: 'Month', filterButton: true },
         { name: 'Name', filterButton: true },
-        ...dynamicKeyCols.map(col => ({ 
-          name: col.header, 
+        ...dynamicKeyCols.map(col => ({
+          name: col.header,
           filterButton: true,
           totalsRowFunction: col.header.toLowerCase().includes('rate') ? undefined : 'sum'
         }))
@@ -438,7 +439,7 @@ export default function ProductionPlanMaker() {
             { formula: `TEXT(A${rowIndex}, "mmmm")` },
             item.name,
           ];
-          
+
           dynamicKeyCols.forEach(col => {
             if (col.formula) {
               row.push({ formula: col.formula.replace(/{rowIndex}/g, rowIndex.toString()) });
@@ -473,10 +474,10 @@ export default function ProductionPlanMaker() {
 
       // --- Sheet 2: Production Plan ---
       const sheetPlan = workbook.addWorksheet(sanitizeSheetName(`${projectData.name} Plan`));
-      
+
       const unit = projectData.unit || 'Units';
       const unitLabel = unit.charAt(0).toUpperCase() + unit.slice(1);
-      
+
       // Define Columns from projectData.columns
       // We always start with Date and Month
       const dynamicColumns: ProjectColumn[] = [
@@ -510,13 +511,13 @@ export default function ProductionPlanMaker() {
         if (sectionCols.length > 0) {
           const startCol = getColumnLetter(currentColIndex);
           const endCol = getColumnLetter(currentColIndex + sectionCols.length - 1);
-          
+
           // Row 2: Main Section
           const ref2 = `${startCol}2:${endCol}2`;
           sheetPlan.mergeCells(ref2);
           const cell2 = sheetPlan.getCell(`${startCol}2`);
           cell2.value = section === 'Target' ? `Target ${unitLabel} Output` : (section === 'Actual' ? `${unitLabel} Output Tracking` : section);
-          
+
           // Styling based on section
           if (section === 'Target') {
             cell2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
@@ -556,7 +557,7 @@ export default function ProductionPlanMaker() {
         cell.border = {
           top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
         };
-        
+
         // Background colors for Row 4 based on sections
         if (col.section === 'Target') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
         else if (col.section === 'Actual') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6E0B4' } };
@@ -570,10 +571,10 @@ export default function ProductionPlanMaker() {
         const rowIndex = index + 5;
         const dateObj = new Date(dateIso);
         const row = sheetPlan.getRow(rowIndex);
-        
+
         dynamicColumns.forEach((col, colIdx) => {
           const cell = row.getCell(colIdx + 1);
-          
+
           if (col.key === 'date') {
             cell.value = dateObj;
           } else if (col.key === 'month') {
@@ -605,11 +606,11 @@ export default function ProductionPlanMaker() {
         if (colIdx === 0) return; // Skip 'Date'
         const cell = totalRow.getCell(colIdx + 1);
         const colLetter = getColumnLetter(colIdx + 1);
-        
+
         // Sum numeric columns, skip month/rates
         const isRate = col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%');
         const isMonth = col.key === 'month';
-        
+
         if (!isMonth && !isRate) {
           cell.value = { formula: `SUM(${colLetter}5:${colLetter}${totalRowIndex - 1})` };
         } else if (isRate) {
@@ -647,7 +648,7 @@ export default function ProductionPlanMaker() {
 
       // --- Sheet 3: Pivot Summary ---
       const sheetPivot = workbook.addWorksheet(sanitizeSheetName('Production_Pivot'));
-      
+
       const basePivotCols = [
         { header: 'Week', key: 'week', width: 10 },
         { header: 'Month', key: 'month', width: 15 },
@@ -659,12 +660,12 @@ export default function ProductionPlanMaker() {
         { header: 'Total Variance', formula: `SUMIFS(DailyProductionTable[Variance], DailyProductionTable[Week], A{rowIndex})` },
         { header: 'Cumulative Actual', formula: `SUM($D$2:D{rowIndex})` },
       ])
-      .filter(col => !basePivotCols.some(bp => bp.header === col.header))
-      .map(col => ({
-        header: col.header,
-        formula: col.formula,
-        width: 18
-      }));
+        .filter(col => !basePivotCols.some(bp => bp.header === col.header))
+        .map(col => ({
+          header: col.header,
+          formula: col.formula,
+          width: 18
+        }));
 
       sheetPivot.columns = [...basePivotCols, ...dynamicPivotCols.map(c => ({ header: c.header, key: c.header.replace(/\s+/g, ''), width: c.width }))];
 
@@ -681,8 +682,8 @@ export default function ProductionPlanMaker() {
           { name: 'Month', filterButton: true },
           ...dynamicPivotCols.map(col => {
             const isRate = col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%');
-            return { 
-              name: col.header, 
+            return {
+              name: col.header,
               filterButton: true,
               totalsRowFunction: (isRate ? 'none' : 'sum') as any
             };
@@ -744,7 +745,7 @@ export default function ProductionPlanMaker() {
         sheetDash.getCell(`A${r}`).value = item.label;
         const cell = sheetDash.getCell(`B${r}`);
         cell.value = { formula: item.formula };
-        
+
         if (item.format) {
           cell.numFmt = item.format;
         } else {
@@ -772,7 +773,7 @@ export default function ProductionPlanMaker() {
       sheetDash.getColumn(2).width = 25;
 
       const buffer = await workbook.xlsx.writeBuffer();
-      
+
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'agent',
@@ -842,7 +843,7 @@ export default function ProductionPlanMaker() {
             </p>
           </div>
         </div>
-        <button 
+        <button
           onClick={resetChat}
           className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-full transition-colors"
           title="Reset Chat"
@@ -858,21 +859,29 @@ export default function ProductionPlanMaker() {
             key={msg.id}
             className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
           >
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-              msg.role === 'agent' ? 'bg-blue-600 text-white' : 'bg-gray-900 text-white'
-            }`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === 'agent' ? 'bg-blue-600 text-white' : 'bg-gray-900 text-white'
+              }`}>
               {msg.role === 'agent' ? <Bot className="w-5 h-5" /> : <UserIcon className="w-5 h-5" />}
             </div>
-            
-            <div className={`max-w-[80%] space-y-2`}>
-              <div className={`p-4 rounded-2xl shadow-sm ${
-                msg.role === 'agent' 
-                  ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100' 
-                  : 'bg-gray-900 text-white rounded-tr-none'
-              }`}>
-                <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-              </div>
 
+            <div className={`max-w-[80%] space-y-2`}>
+              <div className={`p-4 rounded-2xl shadow-sm ${msg.role === 'agent'
+                  ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
+                  : 'bg-gray-900 text-white rounded-tr-none'
+                }`}>
+                <div className="leading-relaxed prose prose-sm max-w-none">
+                  <ReactMarkdown
+                    components={{
+                      p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                      strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                      ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
+                      ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
+                      li: ({ children }) => <li className="text-sm">{children}</li>,
+                      code: ({ children }) => <code className="bg-gray-100 px-1 rounded text-xs font-mono">{children}</code>,
+                    }}
+                  >{msg.content}</ReactMarkdown>
+                </div>
+              </div>
               {msg.type === 'file' && msg.fileData && (
                 <button
                   onClick={() => handleDownload(msg.fileData!.name, msg.fileData!.buffer)}
@@ -891,7 +900,7 @@ export default function ProductionPlanMaker() {
             </div>
           </div>
         ))}
-        
+
         {isTyping && (
           <div className="flex gap-3">
             <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white flex-shrink-0">
@@ -914,7 +923,7 @@ export default function ProductionPlanMaker() {
               <Paperclip className="w-4 h-4" />
               <span className="font-medium truncate max-w-[200px]">{fileName}</span>
             </div>
-            <button 
+            <button
               onClick={() => { setFileName(null); setUploadedData(null); }}
               className="text-blue-400 hover:text-blue-600"
             >
