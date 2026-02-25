@@ -88,7 +88,7 @@ export default function ProductionPlanMaker() {
   useEffect(() => {
     if (!chatRef.current) {
       chatRef.current = ai.chats.create({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.0-flash",
         config: {
           systemInstruction: `You are a professional Production Planning Assistant. 
           Your goal is to collect the following information from the user to generate an Excel production plan:
@@ -233,7 +233,6 @@ export default function ProductionPlanMaker() {
     scrollToBottom();
   }, [messages, isTyping]);
 
-  // Cleanup interval on unmount
   useEffect(() => {
     return () => {
       if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
@@ -243,9 +242,7 @@ export default function ProductionPlanMaker() {
   const typewriterEffect = (fullText: string, msgId: string) => {
     let i = 0;
     setIsStreaming(true);
-
     if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
-
     streamIntervalRef.current = setInterval(() => {
       i++;
       setMessages(prev =>
@@ -256,13 +253,12 @@ export default function ProductionPlanMaker() {
         streamIntervalRef.current = null;
         setIsStreaming(false);
       }
-    }, 10);
+    }, 15);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setFileName(file.name);
     Papa.parse(file, {
       header: true,
@@ -273,7 +269,6 @@ export default function ProductionPlanMaker() {
           name: row.Name || row.name || '',
           actual: parseFloat(row.Actual || row.actual || '0')
         })).filter(item => item.date && item.name);
-
         setUploadedData(parsedData);
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
@@ -290,13 +285,7 @@ export default function ProductionPlanMaker() {
 
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isTyping || isStreaming) return;
-
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: inputValue
-    };
-
+    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: inputValue };
     setMessages(prev => [...prev, userMsg]);
     setInputValue('');
     setIsTyping(true);
@@ -309,20 +298,15 @@ export default function ProductionPlanMaker() {
         for (const call of response.functionCalls) {
           if (call.name === 'generate_production_plan') {
             const projectData = call.args as ProjectData;
-
             const combinedActualData = [...(projectData.actualData || [])];
-
             if (uploadedData) {
               uploadedData.forEach(upItem => {
                 const exists = combinedActualData.some(combItem =>
                   combItem.date === upItem.date && combItem.name === upItem.name
                 );
-                if (!exists) {
-                  combinedActualData.push(upItem);
-                }
+                if (!exists) combinedActualData.push(upItem);
               });
             }
-
             projectData.actualData = combinedActualData.length > 0 ? combinedActualData : undefined;
             await generateExcelFile(projectData);
           }
@@ -330,27 +314,14 @@ export default function ProductionPlanMaker() {
       } else {
         const fullText = response.text || "I'm sorry, I didn't quite get that. Could you please provide the project details?";
         const msgId = Date.now().toString();
-
-        setMessages(prev => [...prev, {
-          id: msgId,
-          role: 'agent',
-          content: ''
-        }]);
-
+        setMessages(prev => [...prev, { id: msgId, role: 'agent', content: '' }]);
         typewriterEffect(fullText, msgId);
       }
     } catch (error) {
       console.error("Gemini Error:", error);
       const msgId = Date.now().toString();
-      const errorText = "I'm having a bit of trouble connecting to my brain. Could you try again?";
-
-      setMessages(prev => [...prev, {
-        id: msgId,
-        role: 'agent',
-        content: ''
-      }]);
-
-      typewriterEffect(errorText, msgId);
+      setMessages(prev => [...prev, { id: msgId, role: 'agent', content: '' }]);
+      typewriterEffect("I'm having a bit of trouble connecting to my brain. Could you try again?", msgId);
     } finally {
       setIsTyping(false);
     }
@@ -364,10 +335,7 @@ export default function ProductionPlanMaker() {
 
       const start = new Date(projectData.startDate);
       const end = new Date(projectData.endDate);
-
-      if (!isValid(start) || !isValid(end)) {
-        throw new Error("Invalid dates provided");
-      }
+      if (!isValid(start) || !isValid(end)) throw new Error("Invalid dates provided");
 
       const days = eachDayOfInterval({ start, end });
       const scheduleItems: any[] = [];
@@ -381,43 +349,28 @@ export default function ProductionPlanMaker() {
               return isValid(itemDate) && isSameDay(itemDate, day) && item.name.toLowerCase() === resource.toLowerCase();
             }) || null;
           }
-
-          const item: any = {
-            date: day,
-            name: resource,
-            actual: actualMatch ? actualMatch.actual : null
-          };
-
+          const item: any = { date: day, name: resource, actual: actualMatch ? actualMatch.actual : null };
           if (projectData.dailyColumns && actualMatch) {
-            projectData.dailyColumns.forEach(col => {
-              item[col.key] = actualMatch![col.key] || null;
-            });
+            projectData.dailyColumns.forEach(col => { item[col.key] = actualMatch![col.key] || null; });
           }
-
           scheduleItems.push(item);
         });
       });
 
       const totalItems = scheduleItems.length;
-
       const weights = scheduleItems.map((_, index) => {
         const t = index / (totalItems - 1 || 1);
-        if (t < 0.25) {
-          return 0.3 + (0.6 - 0.3) * (t / 0.25);
-        } else if (t < 0.75) {
-          return 0.6 + (1.0 - 0.6) * ((t - 0.25) / 0.5);
-        } else {
-          return 1.0;
-        }
+        if (t < 0.25) return 0.3 + (0.6 - 0.3) * (t / 0.25);
+        else if (t < 0.75) return 0.6 + (1.0 - 0.6) * ((t - 0.25) / 0.5);
+        else return 1.0;
       });
-
       const totalWeight = weights.reduce((sum, w) => sum + w, 0);
       const itemsWithTargets = scheduleItems.map((item, index) => ({
         ...item,
         target: (weights[index] / totalWeight) * projectData.goal
       }));
 
-      // --- Sheet 1: Daily_Production_Key ---
+      // Sheet 1
       const sheetKey = workbook.addWorksheet(sanitizeSheetName('Daily_Production_Key'));
       const baseKeyCols = [
         { header: 'Date', key: 'date', width: 15 },
@@ -426,34 +379,16 @@ export default function ProductionPlanMaker() {
         { header: 'Month', key: 'month', width: 15 },
         { header: 'Name', key: 'name', width: 20 },
       ];
-
-      const dynamicKeyCols = projectData.dailyColumns.map(col => ({
-        header: col.header,
-        key: col.key,
-        width: 15,
-        formula: col.formula
-      }));
-
+      const dynamicKeyCols = projectData.dailyColumns.map(col => ({ header: col.header, key: col.key, width: 15, formula: col.formula }));
       sheetKey.columns = [...baseKeyCols, ...dynamicKeyCols];
-
       const tableCols = [
-        { name: 'Date', filterButton: true },
-        { name: 'Day', filterButton: true },
-        { name: 'Week', filterButton: true },
-        { name: 'Month', filterButton: true },
+        { name: 'Date', filterButton: true }, { name: 'Day', filterButton: true },
+        { name: 'Week', filterButton: true }, { name: 'Month', filterButton: true },
         { name: 'Name', filterButton: true },
-        ...dynamicKeyCols.map(col => ({
-          name: col.header,
-          filterButton: true,
-          totalsRowFunction: col.header.toLowerCase().includes('rate') ? undefined : 'sum'
-        }))
+        ...dynamicKeyCols.map(col => ({ name: col.header, filterButton: true, totalsRowFunction: col.header.toLowerCase().includes('rate') ? undefined : 'sum' }))
       ];
-
       sheetKey.addTable({
-        name: 'DailyProductionTable',
-        ref: 'A1',
-        headerRow: true,
-        totalsRow: true,
+        name: 'DailyProductionTable', ref: 'A1', headerRow: true, totalsRow: true,
         style: { theme: 'TableStyleMedium2', showRowStripes: true },
         columns: tableCols as any,
         rows: itemsWithTargets.map((item, index) => {
@@ -465,18 +400,13 @@ export default function ProductionPlanMaker() {
             { formula: `TEXT(A${rowIndex}, "mmmm")` },
             item.name,
           ];
-
           dynamicKeyCols.forEach(col => {
-            if (col.formula) {
-              row.push({ formula: col.formula.replace(/{rowIndex}/g, rowIndex.toString()) });
-            } else {
-              row.push(item[col.key]);
-            }
+            if (col.formula) row.push({ formula: col.formula.replace(/{rowIndex}/g, rowIndex.toString()) });
+            else row.push(item[col.key]);
           });
           return row;
         }),
       });
-
       const keyRows = scheduleItems.length + 1;
       const lastKeyColLetter = getColumnLetter(sheetKey.columns.length);
       sheetKey.addConditionalFormatting({
@@ -487,68 +417,56 @@ export default function ProductionPlanMaker() {
         ],
       });
 
-      // --- Sheet 2: Production Plan ---
+      // Sheet 2
       const sheetPlan = workbook.addWorksheet(sanitizeSheetName(`${projectData.name} Plan`));
-
       const unit = projectData.unit || 'Units';
       const unitLabel = unit.charAt(0).toUpperCase() + unit.slice(1);
-
       const dynamicColumns: ProjectColumn[] = [
         { header: 'Date', key: 'date', width: 15, section: 'Target' as const },
         { header: 'Month', key: 'month', width: 15, section: 'Target' as const },
         ...projectData.columns
       ];
-
-      sheetPlan.columns = dynamicColumns.map(col => ({
-        key: col.key,
-        width: col.width || 18
-      }));
+      sheetPlan.columns = dynamicColumns.map(col => ({ key: col.key, width: col.width || 18 }));
 
       const totalCols = dynamicColumns.length;
       const lastColLetter = getColumnLetter(totalCols);
       sheetPlan.mergeCells(`A1:${lastColLetter}1`);
       const titleCell = sheetPlan.getCell('A1');
       titleCell.value = `${projectData.name}: Production Plan & Daily Output Tracking`;
-      titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006633' } };
+      titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF133020' } };
       titleCell.font = { color: { argb: 'FFFFFFFF' }, bold: true, size: 12 };
       titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
       const sections = ['Target', 'Actual', 'Accumulative'] as const;
       let currentColIndex = 1;
-
       sections.forEach(section => {
         const sectionCols = dynamicColumns.filter(c => c.section === section);
         if (sectionCols.length > 0) {
           const startCol = getColumnLetter(currentColIndex);
           const endCol = getColumnLetter(currentColIndex + sectionCols.length - 1);
-
           const ref2 = `${startCol}2:${endCol}2`;
           sheetPlan.mergeCells(ref2);
           const cell2 = sheetPlan.getCell(`${startCol}2`);
           cell2.value = section === 'Target' ? `Target ${unitLabel} Output` : (section === 'Actual' ? `${unitLabel} Output Tracking` : section);
-
           if (section === 'Target') {
             cell2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
-          } else if (section === 'Actual' || section === 'Accumulative') {
-            cell2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF70AD47' } };
+          } else {
+            cell2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF046241' } };
             cell2.font = { color: { argb: 'FFFFFFFF' }, bold: true };
           }
           cell2.alignment = { horizontal: 'center', vertical: 'middle' };
-
           if (section === 'Actual' || section === 'Accumulative') {
             const ref3 = `${startCol}3:${endCol}3`;
             sheetPlan.mergeCells(ref3);
             const cell3 = sheetPlan.getCell(`${startCol}3`);
             cell3.value = section;
-            cell3.fill = { type: 'pattern', pattern: 'solid', fgColor: section === 'Actual' ? { argb: 'FFC6E0B4' } : { argb: 'FFD9D9D9' } };
+            cell3.fill = { type: 'pattern', pattern: 'solid', fgColor: section === 'Actual' ? { argb: 'FFFFC370' } : { argb: 'FFD9D9D9' } };
             cell3.font = { bold: true };
             cell3.alignment = { horizontal: 'center', vertical: 'middle' };
           } else {
-            const ref23 = `${startCol}2:${endCol}3`;
             sheetPlan.unMergeCells(ref2);
-            sheetPlan.mergeCells(ref23);
+            sheetPlan.mergeCells(`${startCol}2:${endCol}3`);
           }
-
           currentColIndex += sectionCols.length;
         }
       });
@@ -559,42 +477,25 @@ export default function ProductionPlanMaker() {
         cell.value = col.header;
         cell.font = { bold: true };
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-        cell.border = {
-          top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
-        };
-
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         if (col.section === 'Target') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
-        else if (col.section === 'Actual') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6E0B4' } };
+        else if (col.section === 'Actual') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC370' } };
         else cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
       });
       headerRow4.height = 40;
 
       const uniqueDates = Array.from(new Set(scheduleItems.map(s => s.date.toISOString()))).sort();
-
       uniqueDates.forEach((dateIso, index) => {
         const rowIndex = index + 5;
         const dateObj = new Date(dateIso);
         const row = sheetPlan.getRow(rowIndex);
-
         dynamicColumns.forEach((col, colIdx) => {
           const cell = row.getCell(colIdx + 1);
-
-          if (col.key === 'date') {
-            cell.value = dateObj;
-          } else if (col.key === 'month') {
-            cell.value = { formula: `TEXT(A${rowIndex}, "mmmm")` };
-          } else if (col.formula) {
-            const finalFormula = col.formula.replace(/{rowIndex}/g, rowIndex.toString());
-            cell.value = { formula: finalFormula };
-          }
-
-          cell.border = {
-            top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
-          };
-
-          if (col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%')) {
-            cell.numFmt = '0.00%';
-          }
+          if (col.key === 'date') cell.value = dateObj;
+          else if (col.key === 'month') cell.value = { formula: `TEXT(A${rowIndex}, "mmmm")` };
+          else if (col.formula) cell.value = { formula: col.formula.replace(/{rowIndex}/g, rowIndex.toString()) };
+          cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+          if (col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%')) cell.numFmt = '0.00%';
         });
       });
 
@@ -606,18 +507,11 @@ export default function ProductionPlanMaker() {
         if (colIdx === 0) return;
         const cell = totalRow.getCell(colIdx + 1);
         const colLetter = getColumnLetter(colIdx + 1);
-
         const isRate = col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%');
         const isMonth = col.key === 'month';
-
-        if (!isMonth && !isRate) {
-          cell.value = { formula: `SUM(${colLetter}5:${colLetter}${totalRowIndex - 1})` };
-        }
-
-        cell.border = {
-          top: { style: 'double' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
-        };
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
+        if (!isMonth && !isRate) cell.value = { formula: `SUM(${colLetter}5:${colLetter}${totalRowIndex - 1})` };
+        cell.border = { top: { style: 'double' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF9F7F7' } };
       });
 
       const planRows = uniqueDates.length + 5;
@@ -629,59 +523,32 @@ export default function ProductionPlanMaker() {
         ],
       });
 
-      // --- Sheet 3: Pivot Summary ---
+      // Sheet 3
       const sheetPivot = workbook.addWorksheet(sanitizeSheetName('Production_Pivot'));
-
-      const basePivotCols = [
-        { header: 'Week', key: 'week', width: 10 },
-        { header: 'Month', key: 'month', width: 15 },
-      ];
-
+      const basePivotCols = [{ header: 'Week', key: 'week', width: 10 }, { header: 'Month', key: 'month', width: 15 }];
       const dynamicPivotCols = (projectData.pivotColumns || [
         { header: 'Total Target', formula: `SUMIFS(DailyProductionTable[Target], DailyProductionTable[Week], A{rowIndex})` },
         { header: 'Total Actual', formula: `SUMIFS(DailyProductionTable[Actual], DailyProductionTable[Week], A{rowIndex})` },
         { header: 'Total Variance', formula: `SUMIFS(DailyProductionTable[Variance], DailyProductionTable[Week], A{rowIndex})` },
         { header: 'Cumulative Actual', formula: `SUM($D$2:D{rowIndex})` },
-      ])
-        .filter(col => !basePivotCols.some(bp => bp.header === col.header))
-        .map(col => ({
-          header: col.header,
-          formula: col.formula,
-          width: 18
-        }));
+      ]).filter(col => !basePivotCols.some(bp => bp.header === col.header)).map(col => ({ header: col.header, formula: col.formula, width: 18 }));
 
       sheetPivot.columns = [...basePivotCols, ...dynamicPivotCols.map(c => ({ header: c.header, key: c.header.replace(/\s+/g, ''), width: c.width }))];
-
       const weeks = Array.from(new Set(scheduleItems.map(s => format(s.date, 'w')))).sort((a, b) => Number(a) - Number(b));
-
       sheetPivot.addTable({
-        name: 'PivotSummaryTable',
-        ref: 'A1',
-        headerRow: true,
-        totalsRow: true,
+        name: 'PivotSummaryTable', ref: 'A1', headerRow: true, totalsRow: true,
         style: { theme: 'TableStyleLight1', showRowStripes: true },
         columns: [
-          { name: 'Week', filterButton: true },
-          { name: 'Month', filterButton: true },
-          ...dynamicPivotCols.map(col => {
-            const isRate = col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%');
-            return {
-              name: col.header,
-              filterButton: true,
-              totalsRowFunction: (isRate ? 'none' : 'sum') as any
-            };
-          })
+          { name: 'Week', filterButton: true }, { name: 'Month', filterButton: true },
+          ...dynamicPivotCols.map(col => ({
+            name: col.header, filterButton: true,
+            totalsRowFunction: (col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%') ? 'none' : 'sum') as any
+          }))
         ],
         rows: weeks.map((week, index) => {
           const rowIndex = index + 2;
-          const row = [
-            Number(week),
-            { formula: `INDEX(DailyProductionTable[Month], MATCH(${week}, DailyProductionTable[Week], 0))` }
-          ];
-          dynamicPivotCols.forEach(col => {
-            const finalFormula = col.formula.replace(/{rowIndex}/g, rowIndex.toString());
-            row.push({ formula: finalFormula } as any);
-          });
+          const row: any[] = [Number(week), { formula: `INDEX(DailyProductionTable[Month], MATCH(${week}, DailyProductionTable[Week], 0))` }];
+          dynamicPivotCols.forEach(col => row.push({ formula: col.formula.replace(/{rowIndex}/g, rowIndex.toString()) }));
           return row;
         })
       });
@@ -696,11 +563,11 @@ export default function ProductionPlanMaker() {
         ],
       });
 
-      // --- Sheet 4: Dashboard ---
+      // Sheet 4
       const sheetDash = workbook.addWorksheet(sanitizeSheetName('Summary_Dashboard'));
       sheetDash.mergeCells('A1:B1');
       sheetDash.getCell('A1').value = 'Project Summary Dashboard';
-      sheetDash.getCell('A1').font = { bold: true, size: 16 };
+      sheetDash.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FF133020' } };
       sheetDash.getCell('A1').alignment = { horizontal: 'center' };
 
       const dashData = projectData.dashboardMetrics || [
@@ -716,9 +583,9 @@ export default function ProductionPlanMaker() {
       dashData.forEach((item, index) => {
         const r = index + 3;
         sheetDash.getCell(`A${r}`).value = item.label;
+        sheetDash.getCell(`A${r}`).font = { bold: true, color: { argb: 'FF133020' } };
         const cell = sheetDash.getCell(`B${r}`);
         cell.value = { formula: item.formula };
-
         if (item.format) {
           cell.numFmt = item.format;
         } else {
@@ -730,27 +597,20 @@ export default function ProductionPlanMaker() {
             ],
           });
         }
-        sheetDash.getCell(`A${r}`).font = { bold: true };
       });
       sheetDash.getColumn(1).width = 30;
       sheetDash.getColumn(2).width = 25;
 
       const buffer = await workbook.xlsx.writeBuffer();
-
       const msgId = Date.now().toString();
       const successText = `I've generated the production plan for **${projectData.name}**. You can download it below.`;
-
       setMessages(prev => [...prev, {
-        id: msgId,
-        role: 'agent',
-        content: '',
-        type: 'file',
+        id: msgId, role: 'agent', content: '', type: 'file',
         fileData: {
           name: `${projectData.name.replace(/\s+/g, '_')}_Production_Planning.xlsx`,
           buffer: buffer as ExcelJS.Buffer
         }
       }]);
-
       typewriterEffect(successText, msgId);
 
     } catch (error) {
@@ -787,7 +647,6 @@ export default function ProductionPlanMaker() {
   };
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -796,47 +655,55 @@ export default function ProductionPlanMaker() {
   }, [inputValue]);
 
   return (
-    <div className="max-w-2xl mx-auto h-[700px] flex flex-col bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-100 p-4 flex justify-between items-center">
+    <div className="max-w-2xl mx-auto h-[700px] flex flex-col rounded-2xl shadow-xl overflow-hidden" style={{ border: '1px solid #e5e0d5' }}>
+
+      {/* ── Header: Dark Serpent #133020 ── */}
+      <div className="p-4 flex justify-between items-center" style={{ backgroundColor: '#133020', borderBottom: '1px solid #046241' }}>
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center text-white">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center text-white" style={{ backgroundColor: '#046241' }}>
             <Bot className="w-6 h-6" />
           </div>
           <div>
-            <h1 className="font-bold text-gray-900">Production Plan Agent</h1>
-            <p className="text-xs text-green-600 flex items-center gap-1">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+            <h1 className="font-bold text-white">Production Plan Agent</h1>
+            <p className="text-xs flex items-center gap-1" style={{ color: '#FFB347' }}>
+              <span className="w-2 h-2 rounded-full animate-pulse inline-block" style={{ backgroundColor: '#FFB347' }}></span>
               Powered by Gemini AI
             </p>
           </div>
         </div>
         <button
           onClick={resetChat}
-          className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-full transition-colors"
+          className="p-2 rounded-full transition-opacity hover:opacity-70"
+          style={{ color: '#FFC370' }}
           title="Reset Chat"
         >
           <RefreshCw className="w-5 h-5" />
         </button>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-6 bg-gray-50/50">
+      {/* ── Messages: Paper #f5eedb ── */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6" style={{ backgroundColor: '#f5eedb' }}>
         {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
-          >
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === 'agent' ? 'bg-blue-600 text-white' : 'bg-gray-900 text-white'
-              }`}>
+          <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+
+            {/* Avatar */}
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white"
+              style={{ backgroundColor: msg.role === 'agent' ? '#046241' : '#133020' }}
+            >
               {msg.role === 'agent' ? <Bot className="w-5 h-5" /> : <UserIcon className="w-5 h-5" />}
             </div>
 
-            <div className={`max-w-[80%] space-y-2`}>
-              <div className={`p-4 rounded-2xl shadow-sm ${msg.role === 'agent'
-                ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
-                : 'bg-gray-900 text-white rounded-tr-none'
-                }`}>
+            <div className="max-w-[80%] space-y-2">
+              {/* Bubble */}
+              <div
+                className="p-4 shadow-sm"
+                style={
+                  msg.role === 'agent'
+                    ? { backgroundColor: '#ffffff', color: '#133020', borderRadius: '0 1rem 1rem 1rem', border: '1px solid #e5e0d5' }
+                    : { backgroundColor: '#133020', color: '#ffffff', borderRadius: '1rem 0 1rem 1rem' }
+                }
+              >
                 <div className="leading-relaxed prose prose-sm max-w-none">
                   <ReactMarkdown
                     components={{
@@ -845,76 +712,75 @@ export default function ProductionPlanMaker() {
                       ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
                       ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
                       li: ({ children }) => <li className="text-sm">{children}</li>,
-                      code: ({ children }) => <code className="bg-gray-100 px-1 rounded text-xs font-mono">{children}</code>,
+                      code: ({ children }) => <code className="px-1 rounded text-xs font-mono" style={{ backgroundColor: '#F9F7F7', color: '#133020' }}>{children}</code>,
                     }}
                   >{msg.content}</ReactMarkdown>
                 </div>
               </div>
 
+              {/* Download — Saffron #FFC370 */}
               {msg.type === 'file' && msg.fileData && !isStreaming && (
                 <button
                   onClick={() => handleDownload(msg.fileData!.name, msg.fileData!.buffer)}
-                  className="flex items-center gap-3 bg-green-50 border border-green-100 p-4 rounded-xl w-full hover:bg-green-100 transition-colors group text-left"
+                  className="flex items-center gap-3 p-4 rounded-xl w-full transition-opacity text-left hover:opacity-90"
+                  style={{ backgroundColor: '#FFC370', border: '1px solid #FFB347' }}
                 >
-                  <div className="w-10 h-10 bg-green-100 group-hover:bg-green-200 rounded-lg flex items-center justify-center text-green-600 transition-colors">
-                    <FileSpreadsheet className="w-6 h-6" />
+                  <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: 'rgba(255,255,255,0.3)' }}>
+                    <FileSpreadsheet className="w-6 h-6" style={{ color: '#133020' }} />
                   </div>
                   <div className="flex-1">
-                    <p className="font-medium text-green-900">{msg.fileData.name}</p>
-                    <p className="text-xs text-green-700">Click to download</p>
+                    <p className="font-medium" style={{ color: '#133020' }}>{msg.fileData.name}</p>
+                    <p className="text-xs" style={{ color: '#046241' }}>Click to download</p>
                   </div>
-                  <Download className="w-5 h-5 text-green-600" />
+                  <Download className="w-5 h-5" style={{ color: '#133020' }} />
                 </button>
               )}
             </div>
           </div>
         ))}
 
+        {/* Typing indicator */}
         {isTyping && (
           <div className="flex gap-3">
-            <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white flex-shrink-0">
+            <div className="w-8 h-8 rounded-full flex items-center justify-center text-white flex-shrink-0" style={{ backgroundColor: '#046241' }}>
               <Bot className="w-5 h-5" />
             </div>
-            <div className="bg-white border border-gray-100 p-4 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-              <span className="text-sm text-gray-500">Agent is analyzing...</span>
+            <div className="p-4 rounded-2xl shadow-sm flex items-center gap-2" style={{ backgroundColor: '#ffffff', border: '1px solid #e5e0d5' }}>
+              <Loader2 className="w-4 h-4 animate-spin" style={{ color: '#046241' }} />
+              <span className="text-sm" style={{ color: '#133020' }}>Agent is analyzing...</span>
             </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <div className="p-4 bg-white border-t border-gray-100 space-y-3">
+      {/* ── Input Area: White ── */}
+      <div className="p-4 space-y-3" style={{ backgroundColor: '#ffffff', borderTop: '1px solid #e5e0d5' }}>
         {fileName && (
-          <div className="flex items-center justify-between bg-blue-50 px-3 py-2 rounded-lg border border-blue-100">
-            <div className="flex items-center gap-2 text-sm text-blue-700">
+          <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ backgroundColor: '#f5eedb', border: '1px solid #FFC370' }}>
+            <div className="flex items-center gap-2 text-sm" style={{ color: '#046241' }}>
               <Paperclip className="w-4 h-4" />
               <span className="font-medium truncate max-w-[200px]">{fileName}</span>
             </div>
-            <button
-              onClick={() => { setFileName(null); setUploadedData(null); }}
-              className="text-blue-400 hover:text-blue-600"
-            >
+            <button onClick={() => { setFileName(null); setUploadedData(null); }} className="hover:opacity-70" style={{ color: '#FFB347' }}>
               <X className="w-4 h-4" />
             </button>
           </div>
         )}
+
         <div className="flex items-end gap-2">
+          {/* Attach */}
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="p-3 mb-0.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+            className="p-3 mb-0.5 rounded-xl transition-opacity hover:opacity-70"
+            style={{ color: '#046241' }}
             title="Upload actual data (CSV)"
           >
             <Paperclip className="w-5 h-5" />
           </button>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept=".csv"
-            className="hidden"
-          />
+          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".csv" className="hidden" />
+
+          {/* Textarea */}
           <textarea
             ref={textareaRef}
             rows={1}
@@ -923,12 +789,20 @@ export default function ProductionPlanMaker() {
             onKeyDown={handleKeyDown}
             placeholder="Describe your project..."
             disabled={isTyping || isStreaming}
-            className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px]"
+            className="flex-1 px-4 py-3 rounded-xl outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px]"
+            style={{ backgroundColor: '#F9F7F7', border: '1px solid #e5e0d5', color: '#133020' }}
+            onFocus={e => (e.currentTarget.style.borderColor = '#046241')}
+            onBlur={e => (e.currentTarget.style.borderColor = '#e5e0d5')}
           />
+
+          {/* Send — Castleton Green #046241 */}
           <button
             onClick={handleSendMessage}
             disabled={!inputValue.trim() || isTyping || isStreaming}
-            className="p-3 mb-0.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+            className="p-3 mb-0.5 rounded-xl transition-opacity shadow-sm disabled:opacity-50 disabled:cursor-not-allowed text-white"
+            style={{ backgroundColor: '#046241' }}
+            onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#133020')}
+            onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#046241')}
           >
             <Send className="w-5 h-5" />
           </button>
