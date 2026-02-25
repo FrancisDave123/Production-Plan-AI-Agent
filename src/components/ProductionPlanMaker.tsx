@@ -22,14 +22,14 @@ interface ActualDataItem {
   date: string;
   name: string;
   actual: number;
-  [key: string]: any; // Allow for extra custom fields like 'duration', 'ops', etc.
+  [key: string]: any;
 }
 
 interface ProjectColumn {
   header: string;
   key: string;
   section: 'Target' | 'Actual' | 'Accumulative';
-  formula?: string; // Excel formula with {rowIndex} placeholder
+  formula?: string;
   width?: number;
 }
 
@@ -77,11 +77,13 @@ export default function ProductionPlanMaker() {
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [uploadedData, setUploadedData] = useState<ActualDataItem[] | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const streamIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     if (!chatRef.current) {
@@ -231,6 +233,32 @@ export default function ProductionPlanMaker() {
     scrollToBottom();
   }, [messages, isTyping]);
 
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
+    };
+  }, []);
+
+  const typewriterEffect = (fullText: string, msgId: string) => {
+    let i = 0;
+    setIsStreaming(true);
+
+    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
+
+    streamIntervalRef.current = setInterval(() => {
+      i++;
+      setMessages(prev =>
+        prev.map(m => m.id === msgId ? { ...m, content: fullText.slice(0, i) } : m)
+      );
+      if (i >= fullText.length) {
+        clearInterval(streamIntervalRef.current!);
+        streamIntervalRef.current = null;
+        setIsStreaming(false);
+      }
+    }, 10);
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -261,7 +289,7 @@ export default function ProductionPlanMaker() {
   };
 
   const handleSendMessage = async () => {
-    if (!inputValue.trim() || isTyping) return;
+    if (!inputValue.trim() || isTyping || isStreaming) return;
 
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -282,12 +310,10 @@ export default function ProductionPlanMaker() {
           if (call.name === 'generate_production_plan') {
             const projectData = call.args as ProjectData;
 
-            // Merge actual data from both sources
             const combinedActualData = [...(projectData.actualData || [])];
 
             if (uploadedData) {
               uploadedData.forEach(upItem => {
-                // Avoid duplicates if same date/name exists in both
                 const exists = combinedActualData.some(combItem =>
                   combItem.date === upItem.date && combItem.name === upItem.name
                 );
@@ -302,19 +328,29 @@ export default function ProductionPlanMaker() {
           }
         }
       } else {
+        const fullText = response.text || "I'm sorry, I didn't quite get that. Could you please provide the project details?";
+        const msgId = Date.now().toString();
+
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: msgId,
           role: 'agent',
-          content: response.text || "I'm sorry, I didn't quite get that. Could you please provide the project details?"
+          content: ''
         }]);
+
+        typewriterEffect(fullText, msgId);
       }
     } catch (error) {
       console.error("Gemini Error:", error);
+      const msgId = Date.now().toString();
+      const errorText = "I'm having a bit of trouble connecting to my brain. Could you try again?";
+
       setMessages(prev => [...prev, {
-        id: Date.now().toString(),
+        id: msgId,
         role: 'agent',
-        content: "I'm having a bit of trouble connecting to my brain. Could you try again?"
+        content: ''
       }]);
+
+      typewriterEffect(errorText, msgId);
     } finally {
       setIsTyping(false);
     }
@@ -338,7 +374,6 @@ export default function ProductionPlanMaker() {
 
       days.forEach(day => {
         projectData.resources.forEach(resource => {
-          // Find actual data if it exists
           let actualMatch: ActualDataItem | null = null;
           if (projectData.actualData) {
             actualMatch = projectData.actualData.find(item => {
@@ -353,7 +388,6 @@ export default function ProductionPlanMaker() {
             actual: actualMatch ? actualMatch.actual : null
           };
 
-          // Add extra daily data if defined
           if (projectData.dailyColumns && actualMatch) {
             projectData.dailyColumns.forEach(col => {
               item[col.key] = actualMatch![col.key] || null;
@@ -366,21 +400,13 @@ export default function ProductionPlanMaker() {
 
       const totalItems = scheduleItems.length;
 
-      // --- LPB Target Distribution Logic ---
-      // We calculate a weight for each item based on its chronological position
-      // Learning (0-25%): 30% -> 60% weight
-      // Progress (25-75%): 60% -> 100% weight
-      // Behavior (75-100%): 100% weight
       const weights = scheduleItems.map((_, index) => {
         const t = index / (totalItems - 1 || 1);
         if (t < 0.25) {
-          // Learning Phase: Linear ramp from 0.3 to 0.6
           return 0.3 + (0.6 - 0.3) * (t / 0.25);
         } else if (t < 0.75) {
-          // Progress Phase: Linear ramp from 0.6 to 1.0
           return 0.6 + (1.0 - 0.6) * ((t - 0.25) / 0.5);
         } else {
-          // Behavior Phase: Stable at 1.0 (peak performance)
           return 1.0;
         }
       });
@@ -451,24 +477,13 @@ export default function ProductionPlanMaker() {
         }),
       });
 
-      // Apply conditional formatting for whole vs decimal numbers
       const keyRows = scheduleItems.length + 1;
       const lastKeyColLetter = getColumnLetter(sheetKey.columns.length);
       sheetKey.addConditionalFormatting({
         ref: `F2:${lastKeyColLetter}${keyRows}`,
         rules: [
-          {
-            priority: 1,
-            type: 'expression',
-            formulae: ['MOD(F2,1)=0'],
-            style: { numFmt: '#,##0' },
-          },
-          {
-            priority: 2,
-            type: 'expression',
-            formulae: ['MOD(F2,1)<>0'],
-            style: { numFmt: '#,##0.00' },
-          },
+          { priority: 1, type: 'expression', formulae: ['MOD(F2,1)=0'], style: { numFmt: '#,##0' } },
+          { priority: 2, type: 'expression', formulae: ['MOD(F2,1)<>0'], style: { numFmt: '#,##0.00' } },
         ],
       });
 
@@ -478,8 +493,6 @@ export default function ProductionPlanMaker() {
       const unit = projectData.unit || 'Units';
       const unitLabel = unit.charAt(0).toUpperCase() + unit.slice(1);
 
-      // Define Columns from projectData.columns
-      // We always start with Date and Month
       const dynamicColumns: ProjectColumn[] = [
         { header: 'Date', key: 'date', width: 15, section: 'Target' as const },
         { header: 'Month', key: 'month', width: 15, section: 'Target' as const },
@@ -491,7 +504,6 @@ export default function ProductionPlanMaker() {
         width: col.width || 18
       }));
 
-      // --- Header Row 1: Project Title ---
       const totalCols = dynamicColumns.length;
       const lastColLetter = getColumnLetter(totalCols);
       sheetPlan.mergeCells(`A1:${lastColLetter}1`);
@@ -501,8 +513,6 @@ export default function ProductionPlanMaker() {
       titleCell.font = { color: { argb: 'FFFFFFFF' }, bold: true, size: 12 };
       titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
-      // --- Header Row 2 & 3: Sections ---
-      // We need to group columns by section to merge them
       const sections = ['Target', 'Actual', 'Accumulative'] as const;
       let currentColIndex = 1;
 
@@ -512,13 +522,11 @@ export default function ProductionPlanMaker() {
           const startCol = getColumnLetter(currentColIndex);
           const endCol = getColumnLetter(currentColIndex + sectionCols.length - 1);
 
-          // Row 2: Main Section
           const ref2 = `${startCol}2:${endCol}2`;
           sheetPlan.mergeCells(ref2);
           const cell2 = sheetPlan.getCell(`${startCol}2`);
           cell2.value = section === 'Target' ? `Target ${unitLabel} Output` : (section === 'Actual' ? `${unitLabel} Output Tracking` : section);
 
-          // Styling based on section
           if (section === 'Target') {
             cell2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
           } else if (section === 'Actual' || section === 'Accumulative') {
@@ -527,7 +535,6 @@ export default function ProductionPlanMaker() {
           }
           cell2.alignment = { horizontal: 'center', vertical: 'middle' };
 
-          // Row 3: Sub Section (only for Actual/Accumulative based on user example)
           if (section === 'Actual' || section === 'Accumulative') {
             const ref3 = `${startCol}3:${endCol}3`;
             sheetPlan.mergeCells(ref3);
@@ -537,7 +544,6 @@ export default function ProductionPlanMaker() {
             cell3.font = { bold: true };
             cell3.alignment = { horizontal: 'center', vertical: 'middle' };
           } else {
-            // For Target, just merge Row 2 and 3
             const ref23 = `${startCol}2:${endCol}3`;
             sheetPlan.unMergeCells(ref2);
             sheetPlan.mergeCells(ref23);
@@ -547,7 +553,6 @@ export default function ProductionPlanMaker() {
         }
       });
 
-      // --- Header Row 4: Column Names ---
       const headerRow4 = sheetPlan.getRow(4);
       dynamicColumns.forEach((col, i) => {
         const cell = headerRow4.getCell(i + 1);
@@ -558,7 +563,6 @@ export default function ProductionPlanMaker() {
           top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
         };
 
-        // Background colors for Row 4 based on sections
         if (col.section === 'Target') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
         else if (col.section === 'Actual') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6E0B4' } };
         else cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
@@ -580,42 +584,34 @@ export default function ProductionPlanMaker() {
           } else if (col.key === 'month') {
             cell.value = { formula: `TEXT(A${rowIndex}, "mmmm")` };
           } else if (col.formula) {
-            // Replace {rowIndex} placeholder in formula
             const finalFormula = col.formula.replace(/{rowIndex}/g, rowIndex.toString());
             cell.value = { formula: finalFormula };
           }
 
-          // Apply borders
           cell.border = {
             top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
           };
 
-          // Specific formatting
           if (col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%')) {
             cell.numFmt = '0.00%';
           }
         });
       });
 
-      // --- Grand Total Row for Production Plan ---
       const totalRowIndex = uniqueDates.length + 5;
       const totalRow = sheetPlan.getRow(totalRowIndex);
       totalRow.getCell(1).value = 'Grand Total';
       totalRow.font = { bold: true };
       dynamicColumns.forEach((col, colIdx) => {
-        if (colIdx === 0) return; // Skip 'Date'
+        if (colIdx === 0) return;
         const cell = totalRow.getCell(colIdx + 1);
         const colLetter = getColumnLetter(colIdx + 1);
 
-        // Sum numeric columns, skip month/rates
         const isRate = col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%');
         const isMonth = col.key === 'month';
 
         if (!isMonth && !isRate) {
           cell.value = { formula: `SUM(${colLetter}5:${colLetter}${totalRowIndex - 1})` };
-        } else if (isRate) {
-          // For rates, we might want a weighted average or just leave blank
-          // User example shows single values, but for grand total we'll leave blank or use a specific formula if provided
         }
 
         cell.border = {
@@ -624,27 +620,14 @@ export default function ProductionPlanMaker() {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
       });
 
-      const planRows = uniqueDates.length + 5; // Including total row
-      // Apply conditional formatting to all numeric columns in the data range
+      const planRows = uniqueDates.length + 5;
       sheetPlan.addConditionalFormatting({
         ref: `C5:${lastColLetter}${planRows}`,
         rules: [
-          {
-            priority: 1,
-            type: 'expression',
-            formulae: ['MOD(C5,1)=0'],
-            style: { numFmt: '#,##0' },
-          },
-          {
-            priority: 2,
-            type: 'expression',
-            formulae: ['MOD(C5,1)<>0'],
-            style: { numFmt: '#,##0.00' },
-          },
+          { priority: 1, type: 'expression', formulae: ['MOD(C5,1)=0'], style: { numFmt: '#,##0' } },
+          { priority: 2, type: 'expression', formulae: ['MOD(C5,1)<>0'], style: { numFmt: '#,##0.00' } },
         ],
       });
-
-      // --- Sheet 3: Pivot Summary ---
 
       // --- Sheet 3: Pivot Summary ---
       const sheetPivot = workbook.addWorksheet(sanitizeSheetName('Production_Pivot'));
@@ -708,18 +691,8 @@ export default function ProductionPlanMaker() {
       sheetPivot.addConditionalFormatting({
         ref: `C2:${lastPivotColLetter}${pivotRows}`,
         rules: [
-          {
-            priority: 1,
-            type: 'expression',
-            formulae: ['MOD(C2,1)=0'],
-            style: { numFmt: '#,##0' },
-          },
-          {
-            priority: 2,
-            type: 'expression',
-            formulae: ['MOD(C2,1)<>0'],
-            style: { numFmt: '#,##0.00' },
-          },
+          { priority: 1, type: 'expression', formulae: ['MOD(C2,1)=0'], style: { numFmt: '#,##0' } },
+          { priority: 2, type: 'expression', formulae: ['MOD(C2,1)<>0'], style: { numFmt: '#,##0.00' } },
         ],
       });
 
@@ -752,18 +725,8 @@ export default function ProductionPlanMaker() {
           sheetDash.addConditionalFormatting({
             ref: `B${r}`,
             rules: [
-              {
-                priority: 1,
-                type: 'expression',
-                formulae: [`MOD(B${r},1)=0`],
-                style: { numFmt: '#,##0' },
-              },
-              {
-                priority: 2,
-                type: 'expression',
-                formulae: [`MOD(B${r},1)<>0`],
-                style: { numFmt: '#,##0.00' },
-              },
+              { priority: 1, type: 'expression', formulae: [`MOD(B${r},1)=0`], style: { numFmt: '#,##0' } },
+              { priority: 2, type: 'expression', formulae: [`MOD(B${r},1)<>0`], style: { numFmt: '#,##0.00' } },
             ],
           });
         }
@@ -774,10 +737,13 @@ export default function ProductionPlanMaker() {
 
       const buffer = await workbook.xlsx.writeBuffer();
 
+      const msgId = Date.now().toString();
+      const successText = `I've generated the production plan for **${projectData.name}**. You can download it below.`;
+
       setMessages(prev => [...prev, {
-        id: Date.now().toString(),
+        id: msgId,
         role: 'agent',
-        content: `I've generated the production plan for **${projectData.name}**. You can download it below.`,
+        content: '',
         type: 'file',
         fileData: {
           name: `${projectData.name.replace(/\s+/g, '_')}_Production_Planning.xlsx`,
@@ -785,13 +751,13 @@ export default function ProductionPlanMaker() {
         }
       }]);
 
+      typewriterEffect(successText, msgId);
+
     } catch (error) {
       console.error(error);
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        role: 'agent',
-        content: "I encountered an error generating the Excel file. Please check the details and try again."
-      }]);
+      const msgId = Date.now().toString();
+      setMessages(prev => [...prev, { id: msgId, role: 'agent', content: '' }]);
+      typewriterEffect("I encountered an error generating the Excel file. Please check the details and try again.", msgId);
     }
   };
 
@@ -801,6 +767,8 @@ export default function ProductionPlanMaker() {
   };
 
   const resetChat = () => {
+    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
+    setIsStreaming(false);
     setMessages([{
       id: '1',
       role: 'agent',
@@ -866,8 +834,8 @@ export default function ProductionPlanMaker() {
 
             <div className={`max-w-[80%] space-y-2`}>
               <div className={`p-4 rounded-2xl shadow-sm ${msg.role === 'agent'
-                  ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
-                  : 'bg-gray-900 text-white rounded-tr-none'
+                ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
+                : 'bg-gray-900 text-white rounded-tr-none'
                 }`}>
                 <div className="leading-relaxed prose prose-sm max-w-none">
                   <ReactMarkdown
@@ -882,7 +850,8 @@ export default function ProductionPlanMaker() {
                   >{msg.content}</ReactMarkdown>
                 </div>
               </div>
-              {msg.type === 'file' && msg.fileData && (
+
+              {msg.type === 'file' && msg.fileData && !isStreaming && (
                 <button
                   onClick={() => handleDownload(msg.fileData!.name, msg.fileData!.buffer)}
                   className="flex items-center gap-3 bg-green-50 border border-green-100 p-4 rounded-xl w-full hover:bg-green-100 transition-colors group text-left"
@@ -953,12 +922,12 @@ export default function ProductionPlanMaker() {
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Describe your project..."
-            disabled={isTyping}
+            disabled={isTyping || isStreaming}
             className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px]"
           />
           <button
             onClick={handleSendMessage}
-            disabled={!inputValue.trim() || isTyping}
+            disabled={!inputValue.trim() || isTyping || isStreaming}
             className="p-3 mb-0.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
           >
             <Send className="w-5 h-5" />
