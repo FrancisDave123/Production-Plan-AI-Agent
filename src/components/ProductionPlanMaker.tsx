@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { saveAs } from 'file-saver';
-import { Bot, RefreshCw, Download, User as UserIcon, FileSpreadsheet, Loader2, Paperclip, Send, X } from 'lucide-react';
+import { Bot, RefreshCw, Download, User as UserIcon, FileSpreadsheet, Loader2, Paperclip, Send, X, FileText } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
 
@@ -27,6 +27,7 @@ export default function ProductionPlanMaker() {
   const [currentFile, setCurrentFile] = useState<FileAttachment | null>(null);
   const [currentProject, setCurrentProject] = useState<Partial<ProjectData> | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<any>(null);
@@ -196,7 +197,7 @@ export default function ProductionPlanMaker() {
     setIsStreaming(true);
     if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
     streamIntervalRef.current = setInterval(() => {
-      i++;
+      i += 5;
       setMessages(prev =>
         prev.map(m => m.id === msgId ? { ...m, content: fullText.slice(0, i) } : m)
       );
@@ -205,7 +206,7 @@ export default function ProductionPlanMaker() {
         streamIntervalRef.current = null;
         setIsStreaming(false);
       }
-    }, 15);
+    }, 5);
   };
 
   const processFile = async (file: File) => {
@@ -327,6 +328,15 @@ export default function ProductionPlanMaker() {
     saveAs(blob, fileName);
   };
 
+  const downloadAttachment = (dataUrl: string, fileName: string) => {
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -379,7 +389,7 @@ export default function ProductionPlanMaker() {
             </div>
             <div className="text-center">
               <p className="text-xl font-bold text-gray-900">Drop files here</p>
-              <p className="text-sm text-gray-500 mt-1">CSV, Excel, or Images</p>
+              <p className="text-sm text-gray-500 mt-1">CSV, Excel, PDF, Docs, or Images</p>
             </div>
           </div>
         </div>
@@ -444,6 +454,43 @@ export default function ProductionPlanMaker() {
                     }}
                   >{msg.content}</ReactMarkdown>
                 </div>
+
+                {/* Attachment Preview */}
+                {msg.attachment && (
+                  <div className="mt-3 pt-3 border-t border-white/10">
+                    {msg.attachment.type.startsWith('image/') ? (
+                      <div 
+                        className="relative group cursor-pointer overflow-hidden rounded-lg border border-white/20 w-fit"
+                        onClick={() => setPreviewImage({ url: msg.attachment!.data, name: msg.attachment!.name })}
+                      >
+                        <img 
+                          src={msg.attachment.data} 
+                          alt={msg.attachment.name} 
+                          className="block max-w-full h-auto max-h-[300px] transition-transform group-hover:scale-105"
+                        />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                          <div className="bg-black/50 p-2 rounded-full text-white">
+                            <Download className="w-5 h-5" />
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div 
+                        className="flex items-center gap-3 p-3 rounded-lg bg-white/10 border border-white/20 cursor-pointer hover:bg-white/20 transition-colors"
+                        onClick={() => downloadAttachment(msg.attachment!.data, msg.attachment!.name)}
+                      >
+                        <div className="p-2 bg-white/20 rounded-md">
+                          <FileText className="w-5 h-5 text-white" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-white truncate">{msg.attachment.name}</p>
+                          <p className="text-xs text-white/70">Click to download</p>
+                        </div>
+                        <Download className="w-4 h-4 text-white/70" />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Download Section */}
@@ -501,11 +548,11 @@ export default function ProductionPlanMaker() {
             onClick={() => fileInputRef.current?.click()}
             className="p-3 mb-0.5 rounded-xl transition-opacity hover:opacity-70"
             style={{ color: '#046241' }}
-            title="Upload actual data (CSV/Excel/Image)"
+            title="Upload file (CSV, Excel, PDF, Doc, PPT, Image)"
           >
             <Paperclip className="w-5 h-5" />
           </button>
-          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".csv, .xlsx, .xls, image/*" className="hidden" />
+          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".csv, .xlsx, .xls, .pdf, .docx, .doc, .pptx, .ppt, .txt, .md, .json, image/*" className="hidden" />
 
           <textarea
             ref={textareaRef}
@@ -529,6 +576,35 @@ export default function ProductionPlanMaker() {
           </button>
         </div>
       </div>
+      {/* Image Preview Modal */}
+      {previewImage && (
+        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="relative max-w-full max-h-full flex flex-col items-center">
+            <div className="absolute top-4 right-4 flex gap-3 z-10">
+              <button
+                onClick={() => downloadAttachment(previewImage.url, previewImage.name)}
+                className="p-3 bg-black/60 hover:bg-black/80 rounded-full text-white backdrop-blur-md transition-all border border-white/20 shadow-lg hover:scale-105"
+                title="Download"
+              >
+                <Download className="w-6 h-6" />
+              </button>
+              <button
+                onClick={() => setPreviewImage(null)}
+                className="p-3 bg-black/60 hover:bg-black/80 rounded-full text-white backdrop-blur-md transition-all border border-white/20 shadow-lg hover:scale-105"
+                title="Close"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            <img
+              src={previewImage.url}
+              alt={previewImage.name}
+              className="max-w-full max-h-[80vh] rounded-lg shadow-2xl object-contain"
+            />
+            <p className="mt-4 text-white/80 font-medium">{previewImage.name}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
