@@ -15,6 +15,11 @@ interface Message {
     name: string;
     buffer: ExcelJS.Buffer;
   };
+  attachment?: {
+    name: string;
+    type: string;
+    data: string; // Base64 for images, or other data
+  };
 }
 
 interface ActualDataItem {
@@ -78,6 +83,9 @@ export default function ProductionPlanMaker() {
   const [isTyping, setIsTyping] = useState(false);
   const [uploadedData, setUploadedData] = useState<ActualDataItem[] | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [currentFile, setCurrentFile] = useState<{ name: string; type: string; data: string; file: File; metadata?: string } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [currentProject, setCurrentProject] = useState<Partial<ProjectData> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -88,44 +96,33 @@ export default function ProductionPlanMaker() {
         model: "gemini-3-flash-preview",
         config: {
           systemInstruction: `You are a professional Production Planning Assistant. 
-          Your goal is to collect the following information from the user to generate an Excel production plan:
+          Your goal is to collect information from the user to generate a comprehensive Excel production plan.
+          
+          CONVERSATION GUIDELINES:
+          - Be professional, concise, and helpful.
+          - Use bolding for key terms and lists for multiple items.
+          - If the user provides a file, acknowledge the data and use it in your suggestions.
+          - Always confirm the structure before calling the tool.
+          
+          REQUIRED PROJECT DETAILS:
           1. Project Name
           2. Overall Goal (numeric value)
-          3. Unit of measurement (e.g., units, hours, revenue)
+          3. Unit (e.g., units, hours)
           4. Start Date (YYYY-MM-DD)
           5. End Date (YYYY-MM-DD)
-          6. List of Resources/Teams
-          
-          The user may also provide 'actual' production data points (Date, Name, Actual value) directly in the chat or via file upload.
-          If they provide it in text, extract it into the 'actualData' parameter.
+          6. Resources/Teams
           
           DYNAMIC SCHEMA ANALYSIS:
-          Based on the project type and unit, you must suggest a set of columns for the production plan. 
+          - Suggest DAILY KEY COLUMNS (Target, Actual, and others like Variance G{rowIndex}-F{rowIndex}).
+          - Suggest PLAN summary columns.
+          - Suggest PIVOT columns for weekly/monthly summaries.
+          - Suggest DASHBOARD metrics for high-level KPIs.
           
-          1. DAILY KEY COLUMNS: Define raw data tracked per resource per day. 
-             - ALWAYS include 'Target' and 'Actual'.
-             - Add others like 'Duration', 'Ops', or 'Variance'.
-             - You can provide formulas for calculated fields (e.g., Variance: G{rowIndex}-F{rowIndex}).
-          2. PLAN COLUMNS: Define daily summaries in the main plan (e.g., 'Total Target', 'Actual Ops').
-          3. PIVOT COLUMNS: Define weekly/monthly aggregations (e.g., 'Total Actual', 'Avg Variance').
-          4. DASHBOARD METRICS: Define high-level KPIs (e.g., 'Overall Goal', '% Completion').
+          The raw data table name is 'DailyProductionTable'.
+          Base columns: [Date(A), Day(B), Week(C), Month(D), Name(E)].
+          Daily columns start at Column F (Index 6).
           
-          TABLE & COLUMN NAMES:
-          - The raw data table is named 'DailyProductionTable'.
-          - Base columns in 'DailyProductionTable' are: [Date (A), Day (B), Week (C), Month (D), Name (E)].
-          - Your 'dailyColumns' start at Column F (Index 6).
-          - Use these names and letters EXACTLY in your formulas.
-          
-          For every PLAN, PIVOT, and DASHBOARD item, you MUST provide an Excel formula that references the 'DailyProductionTable'.
-          Use {rowIndex} for relative row references in Plan/Pivot.
-          
-          You MUST suggest this full architecture to the user and confirm it before generation.
-          
-          IMPORTANT: You are a specialized Production Plan Agent. You must ONLY respond to queries related to production planning, project scheduling, and Excel generation for these plans. 
-          If a user asks about unrelated topics (e.g., weather, general knowledge, jokes, other software), politely decline and redirect them back to production planning.
-          
-          Once you have the core project details (1-6) and have confirmed the full 4-sheet architecture, call the 'generate_production_plan' tool.
-          Be conversational and helpful within your domain. If information is missing, ask for it.`,
+          IMPORTANT: Only help with production planning and Excel generation. Politey decline unrelated queries.`,
           tools: [{
             functionDeclarations: [{
               name: "generate_production_plan",
@@ -138,8 +135,8 @@ export default function ProductionPlanMaker() {
                   unit: { type: Type.STRING, description: "The unit of measurement (e.g., 'units', 'hours')" },
                   startDate: { type: Type.STRING, description: "Start date in YYYY-MM-DD format" },
                   endDate: { type: Type.STRING, description: "End date in YYYY-MM-DD format" },
-                  resources: { 
-                    type: Type.ARRAY, 
+                  resources: {
+                    type: Type.ARRAY,
                     items: { type: Type.STRING },
                     description: "List of names of teams or individuals"
                   },
@@ -150,10 +147,10 @@ export default function ProductionPlanMaker() {
                       properties: {
                         header: { type: Type.STRING, description: "The display name of the column" },
                         key: { type: Type.STRING, description: "A unique key for the column" },
-                        section: { 
-                          type: Type.STRING, 
+                        section: {
+                          type: Type.STRING,
                           enum: ["Target", "Actual", "Accumulative"],
-                          description: "Which section the column belongs to" 
+                          description: "Which section the column belongs to"
                         },
                         formula: { type: Type.STRING, description: "Excel formula referencing DailyProductionTable. Use {rowIndex} for the current row." }
                       },
@@ -230,64 +227,197 @@ export default function ProductionPlanMaker() {
     scrollToBottom();
   }, [messages, isTyping]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const processFile = async (file: File) => {
     setFileName(file.name);
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const parsedData: ActualDataItem[] = results.data.map((row: any) => ({
+    const fileType = file.type;
+
+    if (fileType === 'text/csv' || file.name.endsWith('.csv')) {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          const parsedData: ActualDataItem[] = results.data.map((row: any) => ({
+            date: row.Date || row.date || '',
+            name: row.Name || row.name || '',
+            actual: parseFloat(row.Actual || row.actual || '0')
+          })).filter(item => item.date && item.name);
+
+          // Generate a markdown table snippet
+          const snippet = parsedData.slice(0, 5).map(row =>
+            `| ${row.date} | ${row.name} | ${row.actual} |`
+          ).join('\n');
+          const dataAwareContent = `\n\n**Data Preview (from ${file.name}):**\n| Date | Name | Actual |\n|---|---|---|\n${snippet}\n\nTotal rows: ${parsedData.length}`;
+
+          setUploadedData(parsedData);
+          setCurrentFile({
+            name: file.name,
+            type: fileType,
+            data: '', // Not needed for CSV
+            file: file,
+            metadata: dataAwareContent
+          });
+        },
+        error: (error) => {
+          console.error("CSV Parse Error:", error);
+          alert("Error parsing CSV file. Please ensure it has Date, Name, and Actual columns.");
+        }
+      });
+    } else if (fileType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const buffer = e.target?.result as ArrayBuffer;
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(buffer);
+        const worksheet = workbook.getWorksheet(1);
+        if (!worksheet) return;
+
+        const jsonData: any[] = [];
+        const headers: string[] = [];
+        worksheet.getRow(1).eachCell((cell, colNumber) => {
+          headers[colNumber] = cell.value?.toString() || '';
+        });
+
+        worksheet.eachRow((row, rowNumber) => {
+          if (rowNumber === 1) return;
+          const rowData: any = {};
+          row.eachCell((cell, colNumber) => {
+            rowData[headers[colNumber]] = cell.value;
+          });
+          jsonData.push(rowData);
+        });
+
+        const parsedData: ActualDataItem[] = jsonData.map((row: any) => ({
           date: row.Date || row.date || '',
           name: row.Name || row.name || '',
           actual: parseFloat(row.Actual || row.actual || '0')
         })).filter(item => item.date && item.name);
-        
+
+        // Generate a markdown table snippet
+        const snippet = parsedData.slice(0, 5).map(row =>
+          `| ${row.date} | ${row.name} | ${row.actual} |`
+        ).join('\n');
+        const dataAwareContent = `\n\n**Data Preview (from ${file.name}):**\n| Date | Name | Actual |\n|---|---|---|\n${snippet}\n\nTotal rows: ${parsedData.length}`;
+
         setUploadedData(parsedData);
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          role: 'user',
-          content: `Uploaded actual data: ${file.name} (${parsedData.length} rows detected)`
-        }]);
-      },
-      error: (error) => {
-        console.error("CSV Parse Error:", error);
-        alert("Error parsing CSV file. Please ensure it has Date, Name, and Actual columns.");
-      }
-    });
+        setCurrentFile({
+          name: file.name,
+          type: fileType,
+          data: '', // Not needed for Excel
+          file: file,
+          metadata: dataAwareContent
+        });
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (fileType.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64Data = e.target?.result as string;
+        setCurrentFile({
+          name: file.name,
+          type: fileType,
+          data: base64Data,
+          file: file
+        });
+      };
+      reader.readAsDataURL(file);
+    } else {
+      alert("Unsupported file type. Please upload CSV, Excel, or Image files.");
+      setFileName(null);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await processFile(file);
+    e.target.value = '';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      await processFile(file);
+    }
   };
 
   const handleSendMessage = async () => {
-    if (!inputValue.trim() || isTyping) return;
+    if ((!inputValue.trim() && !currentFile) || isTyping) return;
+
+    // Generate context preamble
+    const contextPreamble = currentProject ?
+      `[CURRENT PROJECT STATE: Name="${currentProject.name || '?'}", Goal=${currentProject.goal || '?'}, Unit="${currentProject.unit || '?'}", Dates=${currentProject.startDate || '?'}/${currentProject.endDate || '?'}, Resources=${currentProject.resources?.join(',') || '?'}]\n`
+      : "";
+
+    const fileMetadata = currentFile?.metadata || "";
+    const fullPrompt = `${contextPreamble}${inputValue}${fileMetadata}`;
 
     const userMsg: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: inputValue
+      content: inputValue || (currentFile ? `Shared ${currentFile.type.startsWith('image/') ? 'an image' : 'a file'}: ${currentFile.name}` : ""),
+      attachment: currentFile ? {
+        name: currentFile.name,
+        type: currentFile.type,
+        data: currentFile.data
+      } : undefined
     };
 
     setMessages(prev => [...prev, userMsg]);
     setInputValue('');
+    setCurrentFile(null);
+    setFileName(null);
     setIsTyping(true);
 
     try {
-      const result = await chatRef.current.sendMessage({ message: userMsg.content });
+      let result;
+      if (userMsg.attachment && userMsg.attachment.type.startsWith('image/')) {
+        const base64Data = userMsg.attachment.data.split(',')[1];
+        result = await chatRef.current.sendMessage({
+          message: [
+            { text: fullPrompt },
+            {
+              inlineData: {
+                data: base64Data,
+                mimeType: userMsg.attachment.type
+              }
+            }
+          ]
+        });
+      } else {
+        result = await chatRef.current.sendMessage({ message: fullPrompt });
+      }
+
       const response = result;
-      
+
       if (response.functionCalls) {
         for (const call of response.functionCalls) {
           if (call.name === 'generate_production_plan') {
             const projectData = call.args as ProjectData;
-            
+            setCurrentProject(projectData); // Update current project state
+
             // Merge actual data from both sources
             const combinedActualData = [...(projectData.actualData || [])];
-            
+
             if (uploadedData) {
               uploadedData.forEach(upItem => {
                 // Avoid duplicates if same date/name exists in both
-                const exists = combinedActualData.some(combItem => 
+                const exists = combinedActualData.some(combItem =>
                   combItem.date === upItem.date && combItem.name === upItem.name
                 );
                 if (!exists) {
@@ -295,7 +425,7 @@ export default function ProductionPlanMaker() {
                 }
               });
             }
-            
+
             projectData.actualData = combinedActualData.length > 0 ? combinedActualData : undefined;
             await generateExcelFile(projectData);
           }
@@ -327,14 +457,14 @@ export default function ProductionPlanMaker() {
 
       const start = new Date(projectData.startDate);
       const end = new Date(projectData.endDate);
-      
+
       if (!isValid(start) || !isValid(end)) {
         throw new Error("Invalid dates provided");
       }
 
       const days = eachDayOfInterval({ start, end });
       const scheduleItems: any[] = [];
-      
+
       days.forEach(day => {
         projectData.resources.forEach(resource => {
           // Find actual data if it exists
@@ -364,7 +494,7 @@ export default function ProductionPlanMaker() {
       });
 
       const totalItems = scheduleItems.length;
-      
+
       // --- LPB Target Distribution Logic ---
       // We calculate a weight for each item based on its chronological position
       // Learning (0-25%): 30% -> 60% weight
@@ -399,7 +529,7 @@ export default function ProductionPlanMaker() {
         { header: 'Month', key: 'month', width: 15 },
         { header: 'Name', key: 'name', width: 20 },
       ];
-      
+
       const dynamicKeyCols = projectData.dailyColumns.map(col => ({
         header: col.header,
         key: col.key,
@@ -415,8 +545,8 @@ export default function ProductionPlanMaker() {
         { name: 'Week', filterButton: true },
         { name: 'Month', filterButton: true },
         { name: 'Name', filterButton: true },
-        ...dynamicKeyCols.map(col => ({ 
-          name: col.header, 
+        ...dynamicKeyCols.map(col => ({
+          name: col.header,
           filterButton: true,
           totalsRowFunction: col.header.toLowerCase().includes('rate') ? undefined : 'sum'
         }))
@@ -438,7 +568,7 @@ export default function ProductionPlanMaker() {
             { formula: `TEXT(A${rowIndex}, "mmmm")` },
             item.name,
           ];
-          
+
           dynamicKeyCols.forEach(col => {
             if (col.formula) {
               row.push({ formula: col.formula.replace(/{rowIndex}/g, rowIndex.toString()) });
@@ -473,10 +603,10 @@ export default function ProductionPlanMaker() {
 
       // --- Sheet 2: Production Plan ---
       const sheetPlan = workbook.addWorksheet(sanitizeSheetName(`${projectData.name} Plan`));
-      
+
       const unit = projectData.unit || 'Units';
       const unitLabel = unit.charAt(0).toUpperCase() + unit.slice(1);
-      
+
       // Define Columns from projectData.columns
       // We always start with Date and Month
       const dynamicColumns: ProjectColumn[] = [
@@ -510,13 +640,13 @@ export default function ProductionPlanMaker() {
         if (sectionCols.length > 0) {
           const startCol = getColumnLetter(currentColIndex);
           const endCol = getColumnLetter(currentColIndex + sectionCols.length - 1);
-          
+
           // Row 2: Main Section
           const ref2 = `${startCol}2:${endCol}2`;
           sheetPlan.mergeCells(ref2);
           const cell2 = sheetPlan.getCell(`${startCol}2`);
           cell2.value = section === 'Target' ? `Target ${unitLabel} Output` : (section === 'Actual' ? `${unitLabel} Output Tracking` : section);
-          
+
           // Styling based on section
           if (section === 'Target') {
             cell2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
@@ -556,7 +686,7 @@ export default function ProductionPlanMaker() {
         cell.border = {
           top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' }
         };
-        
+
         // Background colors for Row 4 based on sections
         if (col.section === 'Target') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
         else if (col.section === 'Actual') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6E0B4' } };
@@ -570,10 +700,10 @@ export default function ProductionPlanMaker() {
         const rowIndex = index + 5;
         const dateObj = new Date(dateIso);
         const row = sheetPlan.getRow(rowIndex);
-        
+
         dynamicColumns.forEach((col, colIdx) => {
           const cell = row.getCell(colIdx + 1);
-          
+
           if (col.key === 'date') {
             cell.value = dateObj;
           } else if (col.key === 'month') {
@@ -605,11 +735,11 @@ export default function ProductionPlanMaker() {
         if (colIdx === 0) return; // Skip 'Date'
         const cell = totalRow.getCell(colIdx + 1);
         const colLetter = getColumnLetter(colIdx + 1);
-        
+
         // Sum numeric columns, skip month/rates
         const isRate = col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%');
         const isMonth = col.key === 'month';
-        
+
         if (!isMonth && !isRate) {
           cell.value = { formula: `SUM(${colLetter}5:${colLetter}${totalRowIndex - 1})` };
         } else if (isRate) {
@@ -647,7 +777,7 @@ export default function ProductionPlanMaker() {
 
       // --- Sheet 3: Pivot Summary ---
       const sheetPivot = workbook.addWorksheet(sanitizeSheetName('Production_Pivot'));
-      
+
       const basePivotCols = [
         { header: 'Week', key: 'week', width: 10 },
         { header: 'Month', key: 'month', width: 15 },
@@ -659,12 +789,12 @@ export default function ProductionPlanMaker() {
         { header: 'Total Variance', formula: `SUMIFS(DailyProductionTable[Variance], DailyProductionTable[Week], A{rowIndex})` },
         { header: 'Cumulative Actual', formula: `SUM($D$2:D{rowIndex})` },
       ])
-      .filter(col => !basePivotCols.some(bp => bp.header === col.header))
-      .map(col => ({
-        header: col.header,
-        formula: col.formula,
-        width: 18
-      }));
+        .filter(col => !basePivotCols.some(bp => bp.header === col.header))
+        .map(col => ({
+          header: col.header,
+          formula: col.formula,
+          width: 18
+        }));
 
       sheetPivot.columns = [...basePivotCols, ...dynamicPivotCols.map(c => ({ header: c.header, key: c.header.replace(/\s+/g, ''), width: c.width }))];
 
@@ -681,8 +811,8 @@ export default function ProductionPlanMaker() {
           { name: 'Month', filterButton: true },
           ...dynamicPivotCols.map(col => {
             const isRate = col.header.toLowerCase().includes('rate') || col.header.toLowerCase().includes('%');
-            return { 
-              name: col.header, 
+            return {
+              name: col.header,
               filterButton: true,
               totalsRowFunction: (isRate ? 'none' : 'sum') as any
             };
@@ -744,7 +874,7 @@ export default function ProductionPlanMaker() {
         sheetDash.getCell(`A${r}`).value = item.label;
         const cell = sheetDash.getCell(`B${r}`);
         cell.value = { formula: item.formula };
-        
+
         if (item.format) {
           cell.numFmt = item.format;
         } else {
@@ -772,7 +902,7 @@ export default function ProductionPlanMaker() {
       sheetDash.getColumn(2).width = 25;
 
       const buffer = await workbook.xlsx.writeBuffer();
-      
+
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'agent',
@@ -817,6 +947,20 @@ export default function ProductionPlanMaker() {
     }
   };
 
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile();
+        if (file) {
+          // Rename pasted files to something descriptive
+          const pastedFile = new File([file], `screenshot-${Date.now()}.png`, { type: file.type });
+          await processFile(pastedFile);
+        }
+      }
+    }
+  };
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -827,7 +971,25 @@ export default function ProductionPlanMaker() {
   }, [inputValue]);
 
   return (
-    <div className="max-w-2xl mx-auto h-[700px] flex flex-col bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+    <div
+      className={`max-w-2xl mx-auto h-[700px] flex flex-col bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden relative ${isDragging ? 'ring-4 ring-blue-500 ring-inset' : ''}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-blue-600/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="bg-white p-8 rounded-3xl shadow-2xl border-2 border-blue-500 border-dashed flex flex-col items-center gap-4 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+              <Download className="w-8 h-8 animate-bounce" />
+            </div>
+            <div className="text-center">
+              <p className="text-xl font-bold text-gray-900">Drop files here</p>
+              <p className="text-sm text-gray-500 mt-1">CSV, Excel, or Images</p>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="bg-white border-b border-gray-100 p-4 flex justify-between items-center">
         <div className="flex items-center gap-3">
@@ -842,7 +1004,7 @@ export default function ProductionPlanMaker() {
             </p>
           </div>
         </div>
-        <button 
+        <button
           onClick={resetChat}
           className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-full transition-colors"
           title="Reset Chat"
@@ -858,19 +1020,38 @@ export default function ProductionPlanMaker() {
             key={msg.id}
             className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
           >
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-              msg.role === 'agent' ? 'bg-blue-600 text-white' : 'bg-gray-900 text-white'
-            }`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.role === 'agent' ? 'bg-blue-600 text-white' : 'bg-gray-900 text-white'
+              }`}>
               {msg.role === 'agent' ? <Bot className="w-5 h-5" /> : <UserIcon className="w-5 h-5" />}
             </div>
-            
+
             <div className={`max-w-[80%] space-y-2`}>
-              <div className={`p-4 rounded-2xl shadow-sm ${
-                msg.role === 'agent' 
-                  ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100' 
-                  : 'bg-gray-900 text-white rounded-tr-none'
-              }`}>
+              <div className={`p-4 rounded-2xl shadow-sm ${msg.role === 'agent'
+                ? 'bg-white text-gray-800 rounded-tl-none border border-gray-100'
+                : 'bg-gray-900 text-white rounded-tr-none'
+                }`}>
                 <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                {msg.attachment && (
+                  <div className="mt-2 space-y-2">
+                    {msg.attachment.type.startsWith('image/') ? (
+                      <div className="rounded-lg overflow-hidden border border-gray-200 bg-white">
+                        <img src={msg.attachment.data} alt={msg.attachment.name} className="max-w-full h-auto max-h-64 object-contain mx-auto" />
+                      </div>
+                    ) : (
+                      <div className={`flex items-center gap-3 p-3 rounded-xl border ${msg.role === 'user' ? 'bg-white/10 border-white/20 text-white' : 'bg-gray-50 border-gray-100 text-gray-700'}`}>
+                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${msg.role === 'user' ? 'bg-white/20' : 'bg-white shadow-sm text-blue-600'}`}>
+                          <FileSpreadsheet className="w-6 h-6" />
+                        </div>
+                        <div className="flex-1 overflow-hidden">
+                          <p className="text-sm font-bold truncate">{msg.attachment.name}</p>
+                          <p className={`text-[10px] uppercase font-black tracking-wider opacity-60`}>
+                            {msg.attachment.type.includes('csv') ? 'CSV FILE' : 'EXCEL DOCUMENT'}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {msg.type === 'file' && msg.fileData && (
@@ -891,7 +1072,7 @@ export default function ProductionPlanMaker() {
             </div>
           </div>
         ))}
-        
+
         {isTyping && (
           <div className="flex gap-3">
             <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white flex-shrink-0">
@@ -909,14 +1090,27 @@ export default function ProductionPlanMaker() {
       {/* Input */}
       <div className="p-4 bg-white border-t border-gray-100 space-y-3">
         {fileName && (
-          <div className="flex items-center justify-between bg-blue-50 px-3 py-2 rounded-lg border border-blue-100">
+          <div className="flex items-center justify-between bg-blue-50 px-3 py-2 rounded-lg border border-blue-100 animate-in fade-in slide-in-from-bottom-2 duration-200">
             <div className="flex items-center gap-2 text-sm text-blue-700">
-              <Paperclip className="w-4 h-4" />
-              <span className="font-medium truncate max-w-[200px]">{fileName}</span>
+              {currentFile?.type.startsWith('image/') ? (
+                <div className="w-10 h-10 rounded border border-blue-200 overflow-hidden bg-white shadow-sm">
+                  <img src={currentFile.data} alt="preview" className="w-full h-full object-cover" />
+                </div>
+              ) : (
+                <div className="w-10 h-10 rounded border border-blue-200 flex items-center justify-center bg-white shadow-sm text-blue-600">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+              )}
+              <div className="flex flex-col">
+                <span className="font-bold truncate max-w-[200px]">{fileName}</span>
+                <span className="text-[10px] opacity-70 uppercase font-black tracking-wider">
+                  {currentFile?.type.startsWith('image/') ? 'Image Attachment' : 'Data File (Ready to Analyze)'}
+                </span>
+              </div>
             </div>
-            <button 
-              onClick={() => { setFileName(null); setUploadedData(null); }}
-              className="text-blue-400 hover:text-blue-600"
+            <button
+              onClick={() => { setFileName(null); setUploadedData(null); setCurrentFile(null); }}
+              className="p-1.5 text-blue-400 hover:text-blue-600 hover:bg-blue-100 rounded-full transition-colors"
             >
               <X className="w-4 h-4" />
             </button>
@@ -926,7 +1120,7 @@ export default function ProductionPlanMaker() {
           <button
             onClick={() => fileInputRef.current?.click()}
             className="p-3 mb-0.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
-            title="Upload actual data (CSV)"
+            title="Upload data (CSV, Excel) or Images"
           >
             <Paperclip className="w-5 h-5" />
           </button>
@@ -934,7 +1128,7 @@ export default function ProductionPlanMaker() {
             type="file"
             ref={fileInputRef}
             onChange={handleFileUpload}
-            accept=".csv"
+            accept=".csv, .xlsx, .xls, image/*"
             className="hidden"
           />
           <textarea
@@ -943,14 +1137,18 @@ export default function ProductionPlanMaker() {
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Describe your project..."
             disabled={isTyping}
             className="flex-1 px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px]"
           />
           <button
             onClick={handleSendMessage}
-            disabled={!inputValue.trim() || isTyping}
-            className="p-3 mb-0.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+            disabled={(!inputValue.trim() && !currentFile) || isTyping}
+            className={`p-3 mb-0.5 rounded-xl transition-all shadow-sm ${(inputValue.trim() || currentFile) && !isTyping
+              ? 'bg-blue-600 text-white hover:bg-blue-700'
+              : 'bg-gray-100 text-gray-300 cursor-not-allowed'
+              }`}
           >
             <Send className="w-5 h-5" />
           </button>
