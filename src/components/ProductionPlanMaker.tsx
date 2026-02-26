@@ -11,6 +11,8 @@ import {
   Send,
   X,
   FileText,
+  History,
+  ChevronLeft,
 } from "lucide-react";
 import { GoogleGenAI, Type } from "@google/genai";
 import ReactMarkdown from "react-markdown";
@@ -24,35 +26,38 @@ import {
 } from "../types/production";
 import { generateExcelFile } from "../utils/excelGenerator";
 import { handleFileProcessing } from "../utils/fileHandlers";
+import ChatHistorySidebar, {
+  ChatSession,
+  loadSessions,
+  saveSessions,
+  generateSessionTitle,
+} from "./chat/ChatHistorySidebar";
 
 const ai = new GoogleGenAI({
   apiKey: import.meta.env.VITE_GEMINI_API_KEY || "",
 });
 
+const DEFAULT_MESSAGE: Message = {
+  id: "1",
+  role: "agent",
+  content:
+    "Hello! I'm your Production Plan Agent. I can help you create a detailed Excel production plan. \n\nTo get started, please tell me about your project: **What is the project name, your total goal, the start/end dates, and who is working on it?**",
+};
+
 export default function ProductionPlanMaker() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      role: "agent",
-      content:
-        "Hello! I'm your Production Plan Agent. I can help you create a detailed Excel production plan. \n\nTo get started, please tell me about your project: **What is the project name, your total goal, the start/end dates, and who is working on it?**",
-    },
-  ]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>("");
+  const [showSidebar, setShowSidebar] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([DEFAULT_MESSAGE]);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [uploadedData, setUploadedData] = useState<ActualDataItem[] | null>(
-    null,
-  );
+  const [uploadedData, setUploadedData] = useState<ActualDataItem[] | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [currentFile, setCurrentFile] = useState<FileAttachment | null>(null);
-  const [currentProject, setCurrentProject] =
-    useState<Partial<ProjectData> | null>(null);
+  const [currentProject, setCurrentProject] = useState<Partial<ProjectData> | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [previewImage, setPreviewImage] = useState<{
-    url: string;
-    name: string;
-  } | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<any>(null);
@@ -113,55 +118,21 @@ export default function ProductionPlanMaker() {
                 parameters: {
                   type: Type.OBJECT,
                   properties: {
-                    name: {
-                      type: Type.STRING,
-                      description: "The name of the project",
-                    },
-                    goal: {
-                      type: Type.NUMBER,
-                      description: "The total numeric goal",
-                    },
-                    unit: {
-                      type: Type.STRING,
-                      description:
-                        "The unit of measurement (e.g., 'units', 'hours')",
-                    },
-                    startDate: {
-                      type: Type.STRING,
-                      description: "Start date in YYYY-MM-DD format",
-                    },
-                    endDate: {
-                      type: Type.STRING,
-                      description: "End date in YYYY-MM-DD format",
-                    },
-                    resources: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                      description: "List of names of teams or individuals",
-                    },
+                    name: { type: Type.STRING, description: "The name of the project" },
+                    goal: { type: Type.NUMBER, description: "The total numeric goal" },
+                    unit: { type: Type.STRING, description: "The unit of measurement (e.g., 'units', 'hours')" },
+                    startDate: { type: Type.STRING, description: "Start date in YYYY-MM-DD format" },
+                    endDate: { type: Type.STRING, description: "End date in YYYY-MM-DD format" },
+                    resources: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of names of teams or individuals" },
                     columns: {
                       type: Type.ARRAY,
                       items: {
                         type: Type.OBJECT,
                         properties: {
-                          header: {
-                            type: Type.STRING,
-                            description: "The display name of the column",
-                          },
-                          key: {
-                            type: Type.STRING,
-                            description: "A unique key for the column",
-                          },
-                          section: {
-                            type: Type.STRING,
-                            enum: ["Target", "Actual", "Accumulative"],
-                            description: "Which section the column belongs to",
-                          },
-                          formula: {
-                            type: Type.STRING,
-                            description:
-                              "Excel formula referencing DailyProductionTable. Use {rowIndex} for the current row.",
-                          },
+                          header: { type: Type.STRING, description: "The display name of the column" },
+                          key: { type: Type.STRING, description: "A unique key for the column" },
+                          section: { type: Type.STRING, enum: ["Target", "Actual", "Accumulative"], description: "Which section the column belongs to" },
+                          formula: { type: Type.STRING, description: "Excel formula referencing DailyProductionTable. Use {rowIndex} for the current row." },
                         },
                         required: ["header", "key", "section", "formula"],
                       },
@@ -214,15 +185,7 @@ export default function ProductionPlanMaker() {
                       },
                     },
                   },
-                  required: [
-                    "name",
-                    "goal",
-                    "unit",
-                    "startDate",
-                    "endDate",
-                    "resources",
-                    "columns",
-                  ],
+                  required: ["name", "goal", "unit", "startDate", "endDate", "resources", "columns"],
                 },
               },
             ],
@@ -234,10 +197,39 @@ export default function ProductionPlanMaker() {
 
   // Initialize Gemini Chat
   useEffect(() => {
-    if (!chatRef.current) {
-      initChat();
+    if (!chatRef.current) initChat();
+  }, []);
+
+  // Load sessions on mount
+  useEffect(() => {
+    const stored = loadSessions();
+    if (stored.length > 0) {
+      setSessions(stored);
+      const last = stored[stored.length - 1];
+      setActiveSessionId(last.id);
+      setMessages(last.messages.length > 0 ? last.messages : [DEFAULT_MESSAGE]);
+    } else {
+      setActiveSessionId(Date.now().toString());
     }
-  }, [initChat]);
+  }, []);
+
+  // Save sessions whenever messages change
+  useEffect(() => {
+    if (!activeSessionId) return;
+    setSessions((prev) => {
+      const exists = prev.find((s) => s.id === activeSessionId);
+      let updated: ChatSession[];
+      if (exists) {
+        updated = prev.map((s) =>
+          s.id === activeSessionId ? { ...s, messages, title: generateSessionTitle(messages) } : s,
+        );
+      } else {
+        updated = [...prev, { id: activeSessionId, title: generateSessionTitle(messages), createdAt: new Date().toISOString(), messages }];
+      }
+      saveSessions(updated);
+      return updated;
+    });
+  }, [messages, activeSessionId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -263,9 +255,7 @@ export default function ProductionPlanMaker() {
     streamIntervalRef.current = setInterval(() => {
       i += 5;
       setMessages((prev) =>
-        prev.map((m) =>
-          m.id === msgId ? { ...m, content: fullText.slice(0, i) } : m,
-        ),
+        prev.map((m) => (m.id === msgId ? { ...m, content: fullText.slice(0, i) } : m)),
       );
       if (i >= fullText.length) {
         if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
@@ -279,9 +269,7 @@ export default function ProductionPlanMaker() {
     try {
       const processed = await handleFileProcessing(file);
       setFileName(processed.name!);
-      if (processed.parsedData) {
-        setUploadedData(processed.parsedData);
-      }
+      if (processed.parsedData) setUploadedData(processed.parsedData);
       setCurrentFile(processed as FileAttachment);
     } catch (error) {
       alert(error instanceof Error ? error.message : "Error processing file.");
@@ -314,11 +302,7 @@ export default function ProductionPlanMaker() {
           ? `Shared ${currentFile.type.startsWith("image/") ? "an image" : "a file"}: ${currentFile.name}`
           : ""),
       attachment: currentFile
-        ? {
-            name: currentFile.name,
-            type: currentFile.type,
-            data: currentFile.data,
-          }
+        ? { name: currentFile.name, type: currentFile.type, data: currentFile.data }
         : undefined,
     };
 
@@ -337,12 +321,7 @@ export default function ProductionPlanMaker() {
         result = await chatRef.current!.sendMessage({
           message: [
             { text: fullPrompt },
-            {
-              inlineData: {
-                data: base64Data,
-                mimeType: userMsg.attachment.type,
-              },
-            },
+            { inlineData: { data: base64Data, mimeType: userMsg.attachment.type } },
           ],
         });
       } else {
@@ -360,20 +339,16 @@ export default function ProductionPlanMaker() {
             if (uploadedData) {
               uploadedData.forEach((upItem) => {
                 const exists = combinedActualData.some(
-                  (combItem) =>
-                    combItem.date === upItem.date &&
-                    combItem.name === upItem.name,
+                  (c) => c.date === upItem.date && c.name === upItem.name,
                 );
                 if (!exists) combinedActualData.push(upItem);
               });
             }
-            projectData.actualData =
-              combinedActualData.length > 0 ? combinedActualData : undefined;
+            projectData.actualData = combinedActualData.length > 0 ? combinedActualData : undefined;
             const buffer = await generateExcelFile(projectData);
 
             const msgId = Date.now().toString();
             const successText = `I've generated the production plan for **${projectData.name}**. You can download it below.`;
-
             setMessages((prev) => [
               ...prev,
               {
@@ -395,23 +370,14 @@ export default function ProductionPlanMaker() {
           result?.text ||
           "I'm sorry, I didn't quite get that. Could you please provide more details about your project?";
         const msgId = Date.now().toString();
-        setMessages((prev) => [
-          ...prev,
-          { id: msgId, role: "agent", content: "" },
-        ]);
+        setMessages((prev) => [...prev, { id: msgId, role: "agent", content: "" }]);
         typewriterEffect(textResponse, msgId);
       }
     } catch (error) {
       console.error("Gemini Error:", error);
       const msgId = Date.now().toString();
-      setMessages((prev) => [
-        ...prev,
-        { id: msgId, role: "agent", content: "" },
-      ]);
-      typewriterEffect(
-        "I'm having a bit of trouble connecting to my brain. Could you try again?",
-        msgId,
-      );
+      setMessages((prev) => [...prev, { id: msgId, role: "agent", content: "" }]);
+      typewriterEffect("I'm having a bit of trouble connecting to my brain. Could you try again?", msgId);
     } finally {
       setIsTyping(false);
     }
@@ -443,34 +409,55 @@ export default function ProductionPlanMaker() {
   const resetChat = () => {
     if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
     setIsStreaming(false);
-    setMessages([
-      {
-        id: "1",
-        role: "agent",
-        content:
-          "Hello! I'm your Production Plan Agent. I can help you create a detailed Excel production plan.",
-      },
-    ]);
+    setMessages([DEFAULT_MESSAGE]);
     setUploadedData(null);
     setFileName(null);
     setCurrentProject(null);
     initChat();
   };
 
+  const startNewSession = () => {
+    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
+    setIsStreaming(false);
+    const newId = Date.now().toString();
+    setSessions((prev) => {
+      const updated = [...prev, { id: newId, title: "New Chat", createdAt: new Date().toISOString(), messages: [DEFAULT_MESSAGE] }];
+      saveSessions(updated);
+      return updated;
+    });
+    setActiveSessionId(newId);
+    setMessages([DEFAULT_MESSAGE]);
+    setUploadedData(null);
+    setFileName(null);
+    setCurrentFile(null);
+    setCurrentProject(null);
+    chatRef.current = null;
+    setShowSidebar(false);
+    initChat();
+  };
+
+  const loadSession = (session: ChatSession) => {
+    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
+    setIsStreaming(false);
+    setActiveSessionId(session.id);
+    setMessages(session.messages.length > 0 ? session.messages : [DEFAULT_MESSAGE]);
+    setUploadedData(null);
+    setFileName(null);
+    setCurrentFile(null);
+    setCurrentProject(null);
+    chatRef.current = null;
+    setShowSidebar(false);
+    initChat();
+  };
+
   return (
     <div
-      className="max-w-2xl mx-auto h-[700px] flex flex-col rounded-2xl shadow-xl overflow-hidden relative"
+      className="max-w-4xl mx-auto h-[700px] flex rounded-2xl shadow-xl overflow-hidden relative"
       style={{ border: "1px solid #e5e0d5" }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setIsDragging(true);
-      }}
+      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
       onDragLeave={(e) => {
-        // Only stop dragging if we leave the actual container
         const relatedTarget = e.relatedTarget as Node | null;
-        if (!e.currentTarget.contains(relatedTarget)) {
-          setIsDragging(false);
-        }
+        if (!e.currentTarget.contains(relatedTarget)) setIsDragging(false);
       }}
       onDrop={async (e) => {
         e.preventDefault();
@@ -479,372 +466,279 @@ export default function ProductionPlanMaker() {
         if (file) await processFile(file);
       }}
     >
-      {/* Drag Overlay */}
-      {isDragging && (
-        <div className="absolute inset-0 z-50 bg-blue-600/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
-          <div className="bg-white p-8 rounded-3xl shadow-2xl border-2 border-blue-500 border-dashed flex flex-col items-center gap-4 animate-in zoom-in-95 duration-200">
-            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
-              <Download className="w-8 h-8 animate-bounce" />
+      {/* ── Sidebar ── */}
+      <ChatHistorySidebar
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        showSidebar={showSidebar}
+        onNewSession={startNewSession}
+        onLoadSession={loadSession}
+        onDeleteSession={(sessionId) => {
+          setSessions((prev) => {
+            const updated = prev.filter((s) => s.id !== sessionId);
+            saveSessions(updated);
+            return updated;
+          });
+          if (sessionId === activeSessionId) startNewSession();
+        }}
+      />
+
+      {/* ── Main Chat ── */}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+
+        {/* Drag Overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 z-50 bg-blue-600/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+            <div className="bg-white p-8 rounded-3xl shadow-2xl border-2 border-blue-500 border-dashed flex flex-col items-center gap-4 animate-in zoom-in-95 duration-200">
+              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+                <Download className="w-8 h-8 animate-bounce" />
+              </div>
+              <div className="text-center">
+                <p className="text-xl font-bold text-gray-900">Drop files here</p>
+                <p className="text-sm text-gray-500 mt-1">CSV, Excel, PDF, Docs, or Images</p>
+              </div>
             </div>
-            <div className="text-center">
-              <p className="text-xl font-bold text-gray-900">Drop files here</p>
-              <p className="text-sm text-gray-500 mt-1">
-                CSV, Excel, PDF, Docs, or Images
+          </div>
+        )}
+
+        {/* Header */}
+        <div
+          className="p-4 flex justify-between items-center flex-shrink-0"
+          style={{ backgroundColor: "#133020", borderBottom: "1px solid #046241" }}
+        >
+          <div className="flex items-center gap-3">
+            {/* History toggle */}
+            <button
+              onClick={() => setShowSidebar((v) => !v)}
+              className="p-1.5 rounded-lg transition-opacity hover:opacity-70"
+              style={{ color: "#FFC370" }}
+              title="Toggle History"
+            >
+              {showSidebar ? <ChevronLeft className="w-5 h-5" /> : <History className="w-5 h-5" />}
+            </button>
+            <div
+              className="w-10 h-10 rounded-full flex items-center justify-center text-white"
+              style={{ backgroundColor: "#046241" }}
+            >
+              <Bot className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="font-bold text-white">Production Plan Agent</h1>
+              <p className="text-xs flex items-center gap-1" style={{ color: "#FFB347" }}>
+                <span className="w-2 h-2 rounded-full animate-pulse inline-block" style={{ backgroundColor: "#FFB347" }}></span>
+                Powered by Gemini AI
               </p>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Header: Dark Serpent #133020 */}
-      <div
-        className="p-4 flex justify-between items-center"
-        style={{
-          backgroundColor: "#133020",
-          borderBottom: "1px solid #046241",
-        }}
-      >
-        <div className="flex items-center gap-3">
-          <div
-            className="w-10 h-10 rounded-full flex items-center justify-center text-white"
-            style={{ backgroundColor: "#046241" }}
+          <button
+            onClick={startNewSession}
+            className="p-2 rounded-full transition-opacity hover:opacity-70"
+            style={{ color: "#FFC370" }}
+            title="New Chat"
           >
-            <Bot className="w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="font-bold text-white">Production Plan Agent</h1>
-            <p
-              className="text-xs flex items-center gap-1"
-              style={{ color: "#FFB347" }}
-            >
-              <span
-                className="w-2 h-2 rounded-full animate-pulse inline-block"
-                style={{ backgroundColor: "#FFB347" }}
-              ></span>
-              Powered by Gemini AI
-            </p>
-          </div>
+            <RefreshCw className="w-5 h-5" />
+          </button>
         </div>
-        <button
-          onClick={resetChat}
-          className="p-2 rounded-full transition-opacity hover:opacity-70"
-          style={{ color: "#FFC370" }}
-          title="Reset Chat"
-        >
-          <RefreshCw className="w-5 h-5" />
-        </button>
-      </div>
 
-      {/* Messages: Paper #f5eedb */}
-      <div
-        className="flex-1 overflow-y-auto p-4 space-y-6"
-        style={{ backgroundColor: "#f5eedb" }}
-      >
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
-          >
-            {/* Avatar */}
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white"
-              style={{
-                backgroundColor: msg.role === "agent" ? "#046241" : "#133020",
-              }}
-            >
-              {msg.role === "agent" ? (
-                <Bot className="w-5 h-5" />
-              ) : (
-                <UserIcon className="w-5 h-5" />
-              )}
-            </div>
-
-            <div className="max-w-[80%] space-y-2">
-              {/* Bubble */}
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-6" style={{ backgroundColor: "#f5eedb" }}>
+          {messages.map((msg) => (
+            <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
               <div
-                className="p-4 shadow-sm"
-                style={
-                  msg.role === "agent"
-                    ? {
-                        backgroundColor: "#ffffff",
-                        color: "#133020",
-                        borderRadius: "0 1rem 1rem 1rem",
-                        border: "1px solid #e5e0d5",
-                      }
-                    : {
-                        backgroundColor: "#133020",
-                        color: "#ffffff",
-                        borderRadius: "1rem 0 1rem 1rem",
-                      }
-                }
+                className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white"
+                style={{ backgroundColor: msg.role === "agent" ? "#046241" : "#133020" }}
               >
-                <div className="leading-relaxed prose prose-sm max-w-none">
-                  <ReactMarkdown
-                    components={{
-                      p: ({ children }: any) => (
-                        <p className="mb-2 last:mb-0">{children}</p>
-                      ),
-                      strong: ({ children }: any) => (
-                        <strong className="font-semibold">{children}</strong>
-                      ),
-                      ul: ({ children }: any) => (
-                        <ul className="list-disc list-inside mb-2 space-y-1">
-                          {children}
-                        </ul>
-                      ),
-                      ol: ({ children }: any) => (
-                        <ol className="list-decimal list-inside mb-2 space-y-1">
-                          {children}
-                        </ol>
-                      ),
-                      li: ({ children }: any) => (
-                        <li className="text-sm">{children}</li>
-                      ),
-                      code: ({ children }: any) => (
-                        <code
-                          className="px-1 rounded text-xs font-mono"
-                          style={{
-                            backgroundColor: "#F9F7F7",
-                            color: "#133020",
-                          }}
-                        >
-                          {children}
-                        </code>
-                      ),
-                    }}
-                  >
-                    {msg.content}
-                  </ReactMarkdown>
-                </div>
-
-                {/* Attachment Preview */}
-                {msg.attachment && (
-                  <div className="mt-3 pt-3 border-t border-white/10">
-                    {msg.attachment.type.startsWith("image/") ? (
-                      <div
-                        className="relative group cursor-pointer overflow-hidden rounded-lg border border-white/20 w-fit"
-                        onClick={() =>
-                          setPreviewImage({
-                            url: msg.attachment!.data,
-                            name: msg.attachment!.name,
-                          })
-                        }
-                      >
-                        <img
-                          src={msg.attachment.data}
-                          alt={msg.attachment.name}
-                          className="block max-w-full h-auto max-h-[300px] transition-transform group-hover:scale-105"
-                        />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-                          <div className="bg-black/50 p-2 rounded-full text-white">
-                            <Download className="w-5 h-5" />
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        className="flex items-center gap-3 p-3 rounded-lg bg-white/10 border border-white/20 cursor-pointer hover:bg-white/20 transition-colors"
-                        onClick={() =>
-                          downloadAttachment(
-                            msg.attachment!.data,
-                            msg.attachment!.name,
-                          )
-                        }
-                      >
-                        <div className="p-2 bg-white/20 rounded-md">
-                          <FileText className="w-5 h-5 text-white" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-white truncate">
-                            {msg.attachment.name}
-                          </p>
-                          <p className="text-xs text-white/70">
-                            Click to download
-                          </p>
-                        </div>
-                        <Download className="w-4 h-4 text-white/70" />
-                      </div>
-                    )}
-                  </div>
-                )}
+                {msg.role === "agent" ? <Bot className="w-5 h-5" /> : <UserIcon className="w-5 h-5" />}
               </div>
 
-              {/* Download Section */}
-              {msg.type === "file" && msg.fileData && !isStreaming && (
-                <button
-                  onClick={() =>
-                    handleDownload(msg.fileData!.name, msg.fileData!.buffer)
+              <div className="max-w-[80%] space-y-2">
+                <div
+                  className="p-4 shadow-sm"
+                  style={
+                    msg.role === "agent"
+                      ? { backgroundColor: "#ffffff", color: "#133020", borderRadius: "0 1rem 1rem 1rem", border: "1px solid #e5e0d5" }
+                      : { backgroundColor: "#133020", color: "#ffffff", borderRadius: "1rem 0 1rem 1rem" }
                   }
-                  className="flex items-center gap-3 p-4 rounded-xl w-full transition-opacity text-left hover:opacity-90"
-                  style={{
-                    backgroundColor: "#FFC370",
-                    border: "1px solid #FFB347",
-                  }}
                 >
-                  <div
-                    className="w-10 h-10 rounded-lg flex items-center justify-center"
-                    style={{ backgroundColor: "rgba(255,255,255,0.3)" }}
-                  >
-                    <FileSpreadsheet
-                      className="w-6 h-6"
-                      style={{ color: "#133020" }}
-                    />
+                  <div className="leading-relaxed prose prose-sm max-w-none">
+                    <ReactMarkdown
+                      components={{
+                        p: ({ children }: any) => <p className="mb-2 last:mb-0">{children}</p>,
+                        strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
+                        ul: ({ children }: any) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
+                        ol: ({ children }: any) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
+                        li: ({ children }: any) => <li className="text-sm">{children}</li>,
+                        code: ({ children }: any) => (
+                          <code className="px-1 rounded text-xs font-mono" style={{ backgroundColor: "#F9F7F7", color: "#133020" }}>
+                            {children}
+                          </code>
+                        ),
+                      }}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
                   </div>
-                  <div className="flex-1">
-                    <p className="font-medium" style={{ color: "#133020" }}>
-                      {msg.fileData.name}
-                    </p>
-                    <p className="text-xs" style={{ color: "#046241" }}>
-                      Click to download
-                    </p>
-                  </div>
-                  <Download className="w-5 h-5" style={{ color: "#133020" }} />
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
 
-        {/* Typing indicator */}
-        {isTyping && (
-          <div className="flex gap-3">
-            <div
-              className="w-8 h-8 rounded-full flex items-center justify-center text-white flex-shrink-0"
+                  {/* Attachment Preview */}
+                  {msg.attachment && (
+                    <div className="mt-3 pt-3 border-t border-white/10">
+                      {msg.attachment.type.startsWith("image/") ? (
+                        <div
+                          className="relative group cursor-pointer overflow-hidden rounded-lg border border-white/20 w-fit"
+                          onClick={() => setPreviewImage({ url: msg.attachment!.data, name: msg.attachment!.name })}
+                        >
+                          <img
+                            src={msg.attachment.data}
+                            alt={msg.attachment.name}
+                            className="block max-w-full h-auto max-h-[300px] transition-transform group-hover:scale-105"
+                          />
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
+                            <div className="bg-black/50 p-2 rounded-full text-white">
+                              <Download className="w-5 h-5" />
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className="flex items-center gap-3 p-3 rounded-lg bg-white/10 border border-white/20 cursor-pointer hover:bg-white/20 transition-colors"
+                          onClick={() => downloadAttachment(msg.attachment!.data, msg.attachment!.name)}
+                        >
+                          <div className="p-2 bg-white/20 rounded-md">
+                            <FileText className="w-5 h-5 text-white" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-white truncate">{msg.attachment.name}</p>
+                            <p className="text-xs text-white/70">Click to download</p>
+                          </div>
+                          <Download className="w-4 h-4 text-white/70" />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Download Section */}
+                {msg.type === "file" && msg.fileData && !isStreaming && (
+                  <button
+                    onClick={() => handleDownload(msg.fileData!.name, msg.fileData!.buffer)}
+                    className="flex items-center gap-3 p-4 rounded-xl w-full transition-opacity text-left hover:opacity-90"
+                    style={{ backgroundColor: "#FFC370", border: "1px solid #FFB347" }}
+                  >
+                    <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: "rgba(255,255,255,0.3)" }}>
+                      <FileSpreadsheet className="w-6 h-6" style={{ color: "#133020" }} />
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-medium" style={{ color: "#133020" }}>{msg.fileData.name}</p>
+                      <p className="text-xs" style={{ color: "#046241" }}>Click to download</p>
+                    </div>
+                    <Download className="w-5 h-5" style={{ color: "#133020" }} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* Typing indicator */}
+          {isTyping && (
+            <div className="flex gap-3">
+              <div className="w-8 h-8 rounded-full flex items-center justify-center text-white flex-shrink-0" style={{ backgroundColor: "#046241" }}>
+                <Bot className="w-5 h-5" />
+              </div>
+              <div className="p-4 rounded-2xl shadow-sm flex items-center gap-2" style={{ backgroundColor: "#ffffff", border: "1px solid #e5e0d5" }}>
+                <Loader2 className="w-4 h-4 animate-spin" style={{ color: "#046241" }} />
+                <span className="text-sm" style={{ color: "#133020" }}>Agent is analyzing...</span>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input Area */}
+        <div className="p-4 space-y-3 flex-shrink-0" style={{ backgroundColor: "#ffffff", borderTop: "1px solid #e5e0d5" }}>
+          {fileName && (
+            <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ backgroundColor: "#f5eedb", border: "1px solid #FFC370" }}>
+              <div className="flex items-center gap-2 text-sm" style={{ color: "#046241" }}>
+                <Paperclip className="w-4 h-4" />
+                <span className="font-medium truncate max-w-[200px]">{fileName}</span>
+              </div>
+              <button
+                onClick={() => { setFileName(null); setUploadedData(null); setCurrentFile(null); }}
+                className="hover:opacity-70"
+                style={{ color: "#FFB347" }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          <div className="flex items-end gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="p-3 mb-0.5 rounded-xl transition-opacity hover:opacity-70"
+              style={{ color: "#046241" }}
+              title="Upload file (CSV, Excel, PDF, Doc, PPT, Image)"
+            >
+              <Paperclip className="w-5 h-5" />
+            </button>
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileUpload}
+              accept=".csv, .xlsx, .xls, .pdf, .docx, .doc, .pptx, .ppt, .txt, .md, .json, image/*"
+              className="hidden"
+            />
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Describe your project..."
+              disabled={isTyping || isStreaming}
+              className="flex-1 px-4 py-3 rounded-xl outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px]"
+              style={{ backgroundColor: "#F9F7F7", border: "1px solid #e5e0d5", color: "#133020" }}
+            />
+            <button
+              onClick={handleSendMessage}
+              disabled={(!inputValue.trim() && !currentFile) || isTyping || isStreaming}
+              className="p-3 mb-0.5 rounded-xl transition-opacity shadow-sm disabled:opacity-50 disabled:cursor-not-allowed text-white"
               style={{ backgroundColor: "#046241" }}
             >
-              <Bot className="w-5 h-5" />
-            </div>
-            <div
-              className="p-4 rounded-2xl shadow-sm flex items-center gap-2"
-              style={{
-                backgroundColor: "#ffffff",
-                border: "1px solid #e5e0d5",
-              }}
-            >
-              <Loader2
-                className="w-4 h-4 animate-spin"
-                style={{ color: "#046241" }}
-              />
-              <span className="text-sm" style={{ color: "#133020" }}>
-                Agent is analyzing...
-              </span>
-            </div>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input Area: White */}
-      <div
-        className="p-4 space-y-3"
-        style={{ backgroundColor: "#ffffff", borderTop: "1px solid #e5e0d5" }}
-      >
-        {fileName && (
-          <div
-            className="flex items-center justify-between px-3 py-2 rounded-lg"
-            style={{ backgroundColor: "#f5eedb", border: "1px solid #FFC370" }}
-          >
-            <div
-              className="flex items-center gap-2 text-sm"
-              style={{ color: "#046241" }}
-            >
-              <Paperclip className="w-4 h-4" />
-              <span className="font-medium truncate max-w-[200px]">
-                {fileName}
-              </span>
-            </div>
-            <button
-              onClick={() => {
-                setFileName(null);
-                setUploadedData(null);
-                setCurrentFile(null);
-              }}
-              className="hover:opacity-70"
-              style={{ color: "#FFB347" }}
-            >
-              <X className="w-4 h-4" />
+              <Send className="w-5 h-5" />
             </button>
           </div>
-        )}
-
-        <div className="flex items-end gap-2">
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="p-3 mb-0.5 rounded-xl transition-opacity hover:opacity-70"
-            style={{ color: "#046241" }}
-            title="Upload file (CSV, Excel, PDF, Doc, PPT, Image)"
-          >
-            <Paperclip className="w-5 h-5" />
-          </button>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept=".csv, .xlsx, .xls, .pdf, .docx, .doc, .pptx, .ppt, .txt, .md, .json, image/*"
-            className="hidden"
-          />
-
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Describe your project..."
-            disabled={isTyping || isStreaming}
-            className="flex-1 px-4 py-3 rounded-xl outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px]"
-            style={{
-              backgroundColor: "#F9F7F7",
-              border: "1px solid #e5e0d5",
-              color: "#133020",
-            }}
-          />
-
-          <button
-            onClick={handleSendMessage}
-            disabled={
-              (!inputValue.trim() && !currentFile) || isTyping || isStreaming
-            }
-            className="p-3 mb-0.5 rounded-xl transition-opacity shadow-sm disabled:opacity-50 disabled:cursor-not-allowed text-white"
-            style={{ backgroundColor: "#046241" }}
-          >
-            <Send className="w-5 h-5" />
-          </button>
         </div>
-      </div>
-      {/* Image Preview Modal */}
-      {previewImage && (
-        <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="relative max-w-full max-h-full flex flex-col items-center">
-            <div className="absolute top-4 right-4 flex gap-3 z-10">
-              <button
-                onClick={() =>
-                  downloadAttachment(previewImage.url, previewImage.name)
-                }
-                className="p-3 bg-black/60 hover:bg-black/80 rounded-full text-white backdrop-blur-md transition-all border border-white/20 shadow-lg hover:scale-105"
-                title="Download"
-              >
-                <Download className="w-6 h-6" />
-              </button>
-              <button
-                onClick={() => setPreviewImage(null)}
-                className="p-3 bg-black/60 hover:bg-black/80 rounded-full text-white backdrop-blur-md transition-all border border-white/20 shadow-lg hover:scale-105"
-                title="Close"
-              >
-                <X className="w-6 h-6" />
-              </button>
+
+        {/* Image Preview Modal */}
+        {previewImage && (
+          <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+            <div className="relative max-w-full max-h-full flex flex-col items-center">
+              <div className="absolute top-4 right-4 flex gap-3 z-10">
+                <button
+                  onClick={() => downloadAttachment(previewImage.url, previewImage.name)}
+                  className="p-3 bg-black/60 hover:bg-black/80 rounded-full text-white backdrop-blur-md transition-all border border-white/20 shadow-lg hover:scale-105"
+                  title="Download"
+                >
+                  <Download className="w-6 h-6" />
+                </button>
+                <button
+                  onClick={() => setPreviewImage(null)}
+                  className="p-3 bg-black/60 hover:bg-black/80 rounded-full text-white backdrop-blur-md transition-all border border-white/20 shadow-lg hover:scale-105"
+                  title="Close"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <img
+                src={previewImage.url}
+                alt={previewImage.name}
+                className="max-w-full max-h-[80vh] rounded-lg shadow-2xl object-contain"
+              />
+              <p className="mt-4 text-white/80 font-medium">{previewImage.name}</p>
             </div>
-            <img
-              src={previewImage.url}
-              alt={previewImage.name}
-              className="max-w-full max-h-[80vh] rounded-lg shadow-2xl object-contain"
-            />
-            <p className="mt-4 text-white/80 font-medium">
-              {previewImage.name}
-            </p>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
-}
+} 

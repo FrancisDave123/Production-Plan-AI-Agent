@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Menu, X } from "lucide-react";
 import { navigation } from "../../data/Navigation";
-import logo from "../../assets/logo.png";
+import logo from "../../assets/lifewood-logo.png";
 
 const Navbar = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -27,11 +27,10 @@ const Navbar = () => {
                 <Link
                   key={item.label}
                   to={item.href}
-                  className={`text-sm font-medium transition-colors ${
-                    isActive
+                  className={`text-sm font-medium transition-colors ${isActive
                       ? "text-[#046241] font-semibold"
                       : "text-[#133020] hover:text-[#046241]"
-                  }`}
+                    }`}
                 >
                   {item.label}
                 </Link>
@@ -81,11 +80,10 @@ const Navbar = () => {
                     key={item.label}
                     to={item.href}
                     onClick={() => setMobileOpen(false)}
-                    className={`px-4 py-3 rounded-xl text-sm font-medium transition-colors ${
-                      isActive
+                    className={`px-4 py-3 rounded-xl text-sm font-medium transition-colors ${isActive
                         ? "bg-[#046241]/10 text-[#046241] font-semibold"
                         : "text-[#133020] hover:bg-gray-50"
-                    }`}
+                      }`}
                     data-testid={`mobile-nav-${item.label.toLowerCase().replace(/\s+/g, "-")}`}
                   >
                     {item.label}
