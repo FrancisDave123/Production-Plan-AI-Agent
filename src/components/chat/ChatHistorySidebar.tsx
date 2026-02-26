@@ -98,25 +98,26 @@ export default function ChatHistorySidebar({
                         {[...sessions].reverse().map(session => (
                             <div
                                 key={session.id}
-                                onClick={() => onLoadSession(session)}
                                 className="flex items-center gap-2 p-3 rounded-xl cursor-pointer group transition-opacity hover:opacity-90"
                                 style={{ backgroundColor: session.id === activeSessionId ? '#046241' : 'rgba(255,255,255,0.05)' }}
                             >
-                                <div className="flex-1 min-w-0">
+                                <div
+                                    className="flex-1 min-w-0"
+                                    onClick={() => onLoadSession(session)}
+                                >
                                     <p className="text-xs font-medium truncate text-white">{session.title}</p>
                                     <p className="text-xs mt-0.5" style={{ color: '#FFB347', opacity: 0.8 }}>
                                         {new Date(session.createdAt).toLocaleDateString()}
                                     </p>
                                 </div>
-                                {/* Delete button — uses onMouseDown to fire before parent onClick */}
                                 <button
                                     type="button"
-                                    onMouseDown={(e) => {
+                                    onClick={(e) => {
                                         e.stopPropagation();
-                                        e.preventDefault();
+                                        console.log('delete clicked', session.id);
                                         onDeleteSession(session.id);
                                     }}
-                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:opacity-70"
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded"
                                     style={{ color: '#FFC370' }}
                                 >
                                     <Trash2 className="w-3 h-3" />

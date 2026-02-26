@@ -64,6 +64,7 @@ export default function ProductionPlanMaker() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const deletedSessionsRef = useRef<Set<string>>(new Set());
 
   const initChat = () => {
     chatRef.current = ai.chats.create({
@@ -217,14 +218,15 @@ export default function ProductionPlanMaker() {
   useEffect(() => {
     if (!activeSessionId) return;
     setSessions((prev) => {
-      const exists = prev.find((s) => s.id === activeSessionId);
+      const filtered = prev.filter(s => !deletedSessionsRef.current.has(s.id));
+      const exists = filtered.find((s) => s.id === activeSessionId);
       let updated: ChatSession[];
       if (exists) {
-        updated = prev.map((s) =>
+        updated = filtered.map((s) =>
           s.id === activeSessionId ? { ...s, messages, title: generateSessionTitle(messages) } : s,
         );
       } else {
-        updated = [...prev, { id: activeSessionId, title: generateSessionTitle(messages), createdAt: new Date().toISOString(), messages }];
+        updated = [...filtered, { id: activeSessionId, title: generateSessionTitle(messages), createdAt: new Date().toISOString(), messages }];
       }
       saveSessions(updated);
       return updated;
@@ -450,6 +452,23 @@ export default function ProductionPlanMaker() {
     initChat();
   };
 
+  const handleDeleteSession = (sessionId: string) => {
+    deletedSessionsRef.current.add(sessionId);
+    setSessions((prev) => {
+      const updated = prev.filter((s) => s.id !== sessionId);
+      saveSessions(updated);
+      return updated;
+    });
+    if (sessionId === activeSessionId) {
+      const remaining = sessions.filter((s) => s.id !== sessionId);
+      if (remaining.length > 0) {
+        loadSession(remaining[remaining.length - 1]);
+      } else {
+        startNewSession();
+      }
+    }
+  };
+
   return (
     <div
       className="max-w-4xl mx-auto h-[700px] flex rounded-2xl shadow-xl overflow-hidden relative"
@@ -473,14 +492,7 @@ export default function ProductionPlanMaker() {
         showSidebar={showSidebar}
         onNewSession={startNewSession}
         onLoadSession={loadSession}
-        onDeleteSession={(sessionId) => {
-          setSessions((prev) => {
-            const updated = prev.filter((s) => s.id !== sessionId);
-            saveSessions(updated);
-            return updated;
-          });
-          if (sessionId === activeSessionId) startNewSession();
-        }}
+        onDeleteSession={handleDeleteSession}
       />
 
       {/* ── Main Chat ── */}
@@ -507,7 +519,6 @@ export default function ProductionPlanMaker() {
           style={{ backgroundColor: "#133020", borderBottom: "1px solid #046241" }}
         >
           <div className="flex items-center gap-3">
-            {/* History toggle */}
             <button
               onClick={() => setShowSidebar((v) => !v)}
               className="p-1.5 rounded-lg transition-opacity hover:opacity-70"
@@ -741,4 +752,4 @@ export default function ProductionPlanMaker() {
       </div>
     </div>
   );
-} 
+}
