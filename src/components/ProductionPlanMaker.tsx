@@ -13,6 +13,8 @@ import {
   FileText,
   History,
   ChevronLeft,
+  Moon,
+  Sun,
 } from "lucide-react";
 import { GoogleGenAI, Type } from "@google/genai";
 import ReactMarkdown from "react-markdown";
@@ -36,19 +38,12 @@ import ChatHistorySidebar, {
 const ai = new GoogleGenAI({
   apiKey: import.meta.env.VITE_GEMINI_API_KEY || "",
 });
-
-const DEFAULT_MESSAGE: Message = {
-  id: "1",
-  role: "agent",
-  content:
-    "Hello! I'm your Production Plan Agent. I can help you create a detailed Excel production plan. \n\nTo get started, please tell me about your project: **What is the project name, your total goal, the start/end dates, and who is working on it?**",
-};
-
+// Removed DEFAULT_MESSAGE
 export default function ProductionPlanMaker() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
   const [showSidebar, setShowSidebar] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([DEFAULT_MESSAGE]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -58,6 +53,17 @@ export default function ProductionPlanMaker() {
   const [currentProject, setCurrentProject] = useState<Partial<ProjectData> | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
+  const [isDark, setIsDark] = useState(() => localStorage.getItem("theme") === "dark");
+
+  useEffect(() => {
+    if (isDark) {
+      document.documentElement.classList.add("dark");
+      localStorage.setItem("theme", "dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+      localStorage.setItem("theme", "light");
+    }
+  }, [isDark]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<any>(null);
@@ -212,7 +218,7 @@ export default function ProductionPlanMaker() {
       setSessions(stored);
       const last = stored[stored.length - 1];
       setActiveSessionId(last.id);
-      setMessages(last.messages.length > 0 ? last.messages : [DEFAULT_MESSAGE]);
+      setMessages(last.messages);
     } else {
       setActiveSessionId(Date.now().toString());
     }
@@ -240,6 +246,12 @@ export default function ProductionPlanMaker() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
+
+  useEffect(() => {
+    const handleToggleHistory = () => setShowSidebar((v) => !v);
+    window.addEventListener('toggle-chat-history', handleToggleHistory);
+    return () => window.removeEventListener('toggle-chat-history', handleToggleHistory);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -415,7 +427,7 @@ export default function ProductionPlanMaker() {
   const resetChat = () => {
     if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
     setIsStreaming(false);
-    setMessages([DEFAULT_MESSAGE]);
+    setMessages([]);
     setUploadedData(null);
     setFileName(null);
     setCurrentProject(null);
@@ -427,12 +439,12 @@ export default function ProductionPlanMaker() {
     setIsStreaming(false);
     const newId = Date.now().toString();
     setSessions((prev) => {
-      const updated = [...prev, { id: newId, title: "New Chat", createdAt: new Date().toISOString(), messages: [DEFAULT_MESSAGE] }];
+      const updated = [...prev, { id: newId, title: "New Chat", createdAt: new Date().toISOString(), messages: [] }];
       saveSessions(updated);
       return updated;
     });
     setActiveSessionId(newId);
-    setMessages([DEFAULT_MESSAGE]);
+    setMessages([]);
     setUploadedData(null);
     setFileName(null);
     setCurrentFile(null);
@@ -446,7 +458,7 @@ export default function ProductionPlanMaker() {
     if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
     setIsStreaming(false);
     setActiveSessionId(session.id);
-    setMessages(session.messages.length > 0 ? session.messages : [DEFAULT_MESSAGE]);
+    setMessages(session.messages);
     setUploadedData(null);
     setFileName(null);
     setCurrentFile(null);
@@ -475,8 +487,7 @@ export default function ProductionPlanMaker() {
 
   return (
     <div
-      className="max-w-6xl mx-auto h-[calc(100vh-5rem)] flex overflow-hidden relative"
-      style={{ borderTop: "1px solid #e5e0d5", backgroundColor: "#f5eedb" }}
+      className={`w-full h-[calc(100vh-4rem)] md:h-screen flex overflow-hidden relative transition-colors duration-300 ${isDark ? 'bg-[#171717]' : 'bg-[#f8f9fa]'}`}
       onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
       onDragLeave={(e) => {
         const relatedTarget = e.relatedTarget as Node | null;
@@ -501,6 +512,9 @@ export default function ProductionPlanMaker() {
 
       {/* ── Main Chat ── */}
       <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Subtle background depth */}
+        <div className={`absolute top-[5%] left-[5%] w-[400px] h-[400px] rounded-full blur-[100px] pointer-events-none ${isDark ? 'bg-zinc-800/20' : 'bg-slate-200/40'}`} />
+        <div className={`absolute bottom-[20%] right-[10%] w-[500px] h-[500px] rounded-full blur-[120px] pointer-events-none ${isDark ? 'bg-zinc-700/10' : 'bg-zinc-200/30'}`} />
 
         {/* Drag Overlay */}
         {isDragging && (
@@ -519,44 +533,43 @@ export default function ProductionPlanMaker() {
 
         {/* Header */}
         <div
-          className="p-4 flex justify-between items-center flex-shrink-0"
-          style={{ backgroundColor: "#133020", borderBottom: "1px solid #046241" }}
+          className="absolute top-4 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-5xl p-4 flex justify-between items-center bg-white/20 backdrop-blur-2xl border border-white/40 rounded-[24px] shadow-[0_8px_32px_rgba(0,0,0,0.04),inset_0_1px_2px_rgba(255,255,255,0.8)] z-20"
         >
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowSidebar((v) => !v)}
-              className="p-1.5 rounded-lg transition-opacity hover:opacity-70"
-              style={{ color: "#FFC370" }}
-              title="Toggle History"
-            >
-              {showSidebar ? <ChevronLeft className="w-5 h-5" /> : <History className="w-5 h-5" />}
-            </button>
             <div
-              className="w-10 h-10 rounded-full flex items-center justify-center text-white"
+              className="w-10 h-10 rounded-full flex items-center justify-center text-white shadow-sm"
               style={{ backgroundColor: "#046241" }}
             >
               <Bot className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="font-bold text-white">Production Plan Agent</h1>
-              <p className="text-xs flex items-center gap-1" style={{ color: "#FFB347" }}>
-                <span className="w-2 h-2 rounded-full animate-pulse inline-block" style={{ backgroundColor: "#FFB347" }}></span>
+              <h1 className={`font-bold transition-colors ${isDark ? 'text-gray-100' : 'text-[#133020]'}`}>Production Plan Agent</h1>
+              <p className={`text-xs flex items-center gap-1 transition-colors ${isDark ? 'text-emerald-400' : 'text-[#046241]'}`}>
+                <span className="w-2 h-2 rounded-full animate-pulse inline-block" style={{ backgroundColor: "#046241" }}></span>
                 Powered by Gemini AI
               </p>
             </div>
           </div>
-          <button
-            onClick={startNewSession}
-            className="p-2 rounded-full transition-opacity hover:opacity-70"
-            style={{ color: "#FFC370" }}
-            title="New Chat"
-          >
-            <RefreshCw className="w-5 h-5" />
-          </button>
+          <div className="flex gap-1">
+            <button
+              onClick={() => setIsDark(!isDark)}
+              className={`p-2 rounded-full transition-colors ${isDark ? 'hover:bg-white/10 text-gray-300' : 'hover:bg-white/40 hover:shadow-sm text-[#133020]'}`}
+              title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
+            <button
+              onClick={startNewSession}
+              className={`p-2 rounded-full transition-colors ${isDark ? 'hover:bg-white/10 text-gray-300' : 'hover:bg-white/40 hover:shadow-sm text-[#133020]'}`}
+              title="New Chat"
+            >
+              <RefreshCw className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-6" style={{ backgroundColor: "#f5eedb" }}>
+        <div className={`flex-1 overflow-y-auto pt-28 pb-40 px-4 sm:px-12 md:px-24 lg:px-48 xl:px-72 space-y-6 relative z-10 ${messages.length === 0 ? "hidden" : ""}`}>
           {messages.map((msg) => (
             <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
               <div
@@ -571,11 +584,11 @@ export default function ProductionPlanMaker() {
                   className="p-4 shadow-sm"
                   style={
                     msg.role === "agent"
-                      ? { backgroundColor: "#ffffff", color: "#133020", borderRadius: "0 1rem 1rem 1rem", border: "1px solid #e5e0d5" }
+                      ? { backgroundColor: isDark ? "#27272a" : "#ffffff", color: isDark ? "#f4f4f5" : "#133020", borderRadius: "0 1rem 1rem 1rem", border: isDark ? "1px solid #3f3f46" : "1px solid #e5e0d5" }
                       : { backgroundColor: "#133020", color: "#ffffff", borderRadius: "1rem 0 1rem 1rem" }
                   }
                 >
-                  <div className="leading-relaxed prose prose-sm max-w-none">
+                  <div className={`leading-relaxed prose prose-sm max-w-none ${isDark ? 'prose-invert text-gray-200' : ''}`}>
                     <ReactMarkdown
                       components={{
                         p: ({ children }: any) => <p className="mb-2 last:mb-0">{children}</p>,
@@ -584,7 +597,7 @@ export default function ProductionPlanMaker() {
                         ol: ({ children }: any) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
                         li: ({ children }: any) => <li className="text-sm">{children}</li>,
                         code: ({ children }: any) => (
-                          <code className="px-1 rounded text-xs font-mono" style={{ backgroundColor: "#F9F7F7", color: "#133020" }}>
+                          <code className="px-1 rounded text-xs font-mono" style={{ backgroundColor: isDark ? "#3f3f46" : "#F9F7F7", color: isDark ? "#e4e4e7" : "#133020" }}>
                             {children}
                           </code>
                         ),
@@ -615,7 +628,7 @@ export default function ProductionPlanMaker() {
                         </div>
                       ) : (
                         <div
-                          className="flex items-center gap-3 p-3 rounded-lg bg-white/10 border border-white/20 cursor-pointer hover:bg-white/20 transition-colors"
+                          className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${isDark ? 'bg-white/5 border-white/10 hover:bg-white/10' : 'bg-white/10 border-white/20 hover:bg-white/20'}`}
                           onClick={() => downloadAttachment(msg.attachment!.data, msg.attachment!.name)}
                         >
                           <div className="p-2 bg-white/20 rounded-md">
@@ -659,68 +672,79 @@ export default function ProductionPlanMaker() {
               <div className="w-8 h-8 rounded-full flex items-center justify-center text-white flex-shrink-0" style={{ backgroundColor: "#046241" }}>
                 <Bot className="w-5 h-5" />
               </div>
-              <div className="p-4 rounded-2xl shadow-sm flex items-center gap-2" style={{ backgroundColor: "#ffffff", border: "1px solid #e5e0d5" }}>
+              <div className="p-4 rounded-2xl shadow-sm flex items-center gap-2" style={{ backgroundColor: isDark ? "#27272a" : "#ffffff", border: isDark ? "1px solid #3f3f46" : "1px solid #e5e0d5" }}>
                 <Loader2 className="w-4 h-4 animate-spin" style={{ color: "#046241" }} />
-                <span className="text-sm" style={{ color: "#133020" }}>Agent is analyzing...</span>
+                <span className="text-sm" style={{ color: isDark ? "#f4f4f5" : "#133020" }}>Agent is analyzing...</span>
               </div>
             </div>
           )}
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area */}
-        <div className="p-4 space-y-3 flex-shrink-0" style={{ backgroundColor: "#ffffff", borderTop: "1px solid #e5e0d5" }}>
-          {fileName && (
-            <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ backgroundColor: "#f5eedb", border: "1px solid #FFC370" }}>
-              <div className="flex items-center gap-2 text-sm" style={{ color: "#046241" }}>
-                <Paperclip className="w-4 h-4" />
-                <span className="font-medium truncate max-w-[200px]">{fileName}</span>
+        {/* Input Area Dock */}
+        <div className={
+          messages.length === 0
+            ? "absolute inset-0 flex flex-col items-center justify-center p-4 z-20 pointer-events-none"
+            : `absolute bottom-0 left-0 w-full pb-6 pt-12 px-4 flex justify-center z-20 pointer-events-none bg-gradient-to-t ${isDark ? 'from-[#171717] via-[#171717]/90' : 'from-[#f8f9fa] via-[#f8f9fa]/90'} to-transparent transition-colors duration-300`
+        }>
+          {messages.length === 0 && (
+            <h2 className={`text-3xl md:text-5xl font-normal mb-8 tracking-tight text-center pointer-events-auto transition-colors duration-300 ${isDark ? 'text-gray-100' : 'text-[#133020]'}`}>
+              What’s on the agenda today?
+            </h2>
+          )}
+          <div className={`w-full max-w-4xl p-2 rounded-3xl shadow-2xl space-y-3 backdrop-blur-xl pointer-events-auto border transition-colors duration-300 ${isDark ? 'bg-zinc-800/60 border-white/10' : 'bg-white/50 border-white/50'}`}>
+            {fileName && (
+              <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ backgroundColor: "#ffffff", border: "1px solid #FFC370" }}>
+                <div className="flex items-center gap-2 text-sm" style={{ color: "#046241" }}>
+                  <Paperclip className="w-4 h-4" />
+                  <span className="font-medium truncate max-w-[200px]">{fileName}</span>
+                </div>
+                <button
+                  onClick={() => { setFileName(null); setUploadedData(null); setCurrentFile(null); }}
+                  className="hover:opacity-70"
+                  style={{ color: "#FFB347" }}
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
+            )}
+
+            <div className="flex items-end gap-2">
               <button
-                onClick={() => { setFileName(null); setUploadedData(null); setCurrentFile(null); }}
-                className="hover:opacity-70"
-                style={{ color: "#FFB347" }}
+                onClick={() => fileInputRef.current?.click()}
+                className="p-3 mb-0.5 rounded-xl transition-opacity hover:opacity-70"
+                style={{ color: "#046241" }}
+                title="Upload file (CSV, Excel, PDF, Doc, PPT, Image)"
               >
-                <X className="w-4 h-4" />
+                <Paperclip className="w-5 h-5" />
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileUpload}
+                accept=".csv, .xlsx, .xls, .pdf, .docx, .doc, .pptx, .ppt, .txt, .md, .json, image/*"
+                className="hidden"
+              />
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Describe your project..."
+                disabled={isTyping || isStreaming}
+                className={`flex-1 px-4 py-3 rounded-xl outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px] backdrop-blur-sm ${isDark ? 'bg-zinc-900/40 text-gray-100 placeholder-zinc-500' : 'bg-white/60 text-[#133020]'}`}
+                style={{ border: isDark ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(229, 224, 213, 0.5)" }}
+              />
+              <button
+                onClick={handleSendMessage}
+                disabled={(!inputValue.trim() && !currentFile) || isTyping || isStreaming}
+                className="p-3 mb-0.5 rounded-xl transition-opacity shadow-sm disabled:opacity-50 disabled:cursor-not-allowed text-white"
+                style={{ backgroundColor: "#046241" }}
+              >
+                <Send className="w-5 h-5" />
               </button>
             </div>
-          )}
-
-          <div className="flex items-end gap-2">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="p-3 mb-0.5 rounded-xl transition-opacity hover:opacity-70"
-              style={{ color: "#046241" }}
-              title="Upload file (CSV, Excel, PDF, Doc, PPT, Image)"
-            >
-              <Paperclip className="w-5 h-5" />
-            </button>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileUpload}
-              accept=".csv, .xlsx, .xls, .pdf, .docx, .doc, .pptx, .ppt, .txt, .md, .json, image/*"
-              className="hidden"
-            />
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Describe your project..."
-              disabled={isTyping || isStreaming}
-              className="flex-1 px-4 py-3 rounded-xl outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto max-h-[200px]"
-              style={{ backgroundColor: "#F9F7F7", border: "1px solid #e5e0d5", color: "#133020" }}
-            />
-            <button
-              onClick={handleSendMessage}
-              disabled={(!inputValue.trim() && !currentFile) || isTyping || isStreaming}
-              className="p-3 mb-0.5 rounded-xl transition-opacity shadow-sm disabled:opacity-50 disabled:cursor-not-allowed text-white"
-              style={{ backgroundColor: "#046241" }}
-            >
-              <Send className="w-5 h-5" />
-            </button>
           </div>
         </div>
 

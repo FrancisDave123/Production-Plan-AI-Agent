@@ -5,9 +5,9 @@ import ProductionPlanMaker from "./components/ProductionPlanMaker";
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-[#f5eedb] font-manrope">
+      <div className="bg-white font-manrope h-screen flex">
         <Navbar />
-        <main className="pt-20">
+        <main className="flex-1 transition-all duration-300 pt-16 md:pt-0 md:pl-20">
           <Routes>
             <Route path="/" element={<ProductionPlanMaker />} />
             <Route path="/production-plan" element={<ProductionPlanMaker />} />
