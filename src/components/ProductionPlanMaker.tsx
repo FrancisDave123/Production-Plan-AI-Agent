@@ -67,8 +67,10 @@ export default function ProductionPlanMaker() {
   const deletedSessionsRef = useRef<Set<string>>(new Set());
 
   const initChat = () => {
+    const today = new Date().toLocaleDateString('en-CA'); // Gets YYYY-MM-DD in local time
+
     chatRef.current = ai.chats.create({
-      model: "gemini-2.0-flash",
+      model: "gemini-2.5-flash",
       config: {
         systemInstruction: `You are a professional Production Planning Assistant. 
           Your goal is to collect the following information from the user to generate an Excel production plan:
@@ -78,6 +80,8 @@ export default function ProductionPlanMaker() {
           4. Start Date (YYYY-MM-DD)
           5. End Date (YYYY-MM-DD)
           6. List of Resources/Teams
+          
+          CURRENT DATE CONTEXT: Today's date is \${today}. If the user uses relative dates like "today", "tomorrow", "yesterday", "next Monday", or "in 2 weeks", you MUST calculate and use the exact YYYY-MM-DD based on this current date.
           
           The user may also provide 'actual' production data points (Date, Name, Actual value) directly in the chat or via file upload.
           If they provide it in text, extract it into the 'actualData' parameter.
@@ -471,8 +475,8 @@ export default function ProductionPlanMaker() {
 
   return (
     <div
-      className="max-w-4xl mx-auto h-[700px] flex rounded-2xl shadow-xl overflow-hidden relative"
-      style={{ border: "1px solid #e5e0d5" }}
+      className="max-w-6xl mx-auto h-[calc(100vh-5rem)] flex overflow-hidden relative"
+      style={{ borderTop: "1px solid #e5e0d5", backgroundColor: "#f5eedb" }}
       onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
       onDragLeave={(e) => {
         const relatedTarget = e.relatedTarget as Node | null;
