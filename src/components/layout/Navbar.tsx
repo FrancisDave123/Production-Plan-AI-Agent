@@ -4,7 +4,7 @@ import { Menu, X, Home, FileSpreadsheet, ChevronLeft, ChevronRight, History, Use
 import { useAuth } from "../../contexts/AuthContext";
 import { motion, AnimatePresence } from "motion/react";
 import { navigation } from "../../data/Navigation";
-const logo = "https://framerusercontent.com/images/BZSiFYgRc4wDUAuEybhJbZsIBQY.png?width=1519&height=429";
+const logo = "https://framerusercontent.com/images/Ca8ppNsvJIfTsWEuHr50gvkDow.png?scale-down-to=512&width=2624&height=474";
 import icon from "../../assets/icon.png";
 
 // Extend navigation with icons if possible
