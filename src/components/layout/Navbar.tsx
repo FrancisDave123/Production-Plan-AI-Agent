@@ -4,7 +4,7 @@ import { Menu, X, Home, FileSpreadsheet, ChevronLeft, ChevronRight, History, Use
 import { useAuth } from "../../contexts/AuthContext";
 import { motion, AnimatePresence } from "motion/react";
 import { navigation } from "../../data/Navigation";
-import logo from "../../assets/lifewood-logo.png";
+const logo = "https://framerusercontent.com/images/BZSiFYgRc4wDUAuEybhJbZsIBQY.png?width=1519&height=429";
 import icon from "../../assets/icon.png";
 
 // Extend navigation with icons if possible
