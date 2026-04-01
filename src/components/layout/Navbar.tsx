@@ -64,7 +64,7 @@ const Navbar = () => {
             <img
               src={logo}
               alt="Lifewood Navigation"
-              className="h-8 w-auto object-contain brightness-0 invert min-w-[100px] hover:opacity-80 transition-opacity"
+              className="h-8 w-auto object-contain min-w-[100px] hover:opacity-80 transition-opacity"
             />
           </Link>
           {isExpanded && (
